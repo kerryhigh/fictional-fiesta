@@ -2,427 +2,609 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>WebXR Mini City – Starter</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WebXR Gorilla Push — Color Trip Edition</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    html, body { margin:0; height:100%; background:#111; overflow:hidden; }
+    html, body { margin:0; height:100%; overflow:hidden; background:#000; }
     #info {
-      position: fixed; top: 8px; left: 8px; color: #eee; font: 14px/1.4 system-ui, sans-serif;
-      background: rgba(0,0,0,.4); padding: 8px 10px; border-radius: 8px;
+      position: absolute; left: 12px; top: 12px; color: #e6f7ff; font-family: system-ui, sans-serif;
+      padding: 8px 10px; background: rgba(0,0,0,.35); border-radius: 12px; font-size: 14px; user-select:none;
     }
-    a { color:#8cf; text-decoration:none }
+    #info b{ color:#fff; }
   </style>
 </head>
 <body>
-  <div id="info">Mini City • Left stick: move/strafe • Right stick: turn & up/down • Desktop: WASD+QE, Space/C = up/down • NARF!</div>
+  <div id="info">
+    <b>Gorilla Push Locomotion — Color Trip</b><br/>
+    Squeeze Trigger/Grip to plant a hand • Push along surfaces to move • Reach the glowing ring 🌈
+  </div>
+
   <script type="module">
-  import * as THREE from 'https://unpkg.com/three@0.159.0/build/three.module.js';
-  import { VRButton } from 'https://unpkg.com/three@0.159.0/examples/jsm/webxr/VRButton.js';
+    // ===== Imports =====
+    import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+    import { VRButton } from 'https://unpkg.com/three@0.160.0/examples/jsm/webxr/VRButton.js';
+    import * as CANNON from 'https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js';
 
-  // --- basics -------------------------------------------------------
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x99bbff);
-  scene.fog = new THREE.Fog(0x99bbff, 80, 300);
-
-  const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 1000);
-
-  const renderer = new THREE.WebGLRenderer({ antialias:true });
-  renderer.setSize(innerWidth, innerHeight);
-  renderer.setPixelRatio(devicePixelRatio);
-  renderer.xr.enabled = true;
-  renderer.xr.setReferenceSpaceType('local-floor'); // Quest: floor-relative space so locomotion works
-  document.body.appendChild(renderer.domElement);
-  document.body.appendChild(VRButton.createButton(renderer));
-
-  // Player dolly so we can move the XR camera around
-  const dolly = new THREE.Object3D();
-  dolly.position.set(0, 0, 0);
-  scene.add(dolly);
-  dolly.add(camera);
-
-  // Add XR controllers into the dolly so thumbstick axes are available on Quest
-  const controller0 = renderer.xr.getController(0);
-  const controller1 = renderer.xr.getController(1);
-  dolly.add(controller0);
-  dolly.add(controller1);
-
-  // Lights
-  const hemi = new THREE.HemisphereLight(0xffffff, 0x334455, 0.9);
-  scene.add(hemi);
-  const sun = new THREE.DirectionalLight(0xffffff, 0.8);
-  sun.position.set(1, 2, 0.5).multiplyScalar(200);
-  sun.castShadow = false;
-  scene.add(sun);
-
-  // --- city params --------------------------------------------------
-  const BLOCK_SIZE = 40;      // size of a city block
-  const ROAD_WIDTH = 8;       // width of roads
-  const GRID_HALF = 3;        // blocks in each direction (total = (2*GRID_HALF+1)^2)
-  const CITY_EXTENT = (BLOCK_SIZE + ROAD_WIDTH) * GRID_HALF + BLOCK_SIZE * 0.5;
-
-  // Ground base
-  {
-    const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(2000, 2000),
-      new THREE.MeshPhongMaterial({ color: 0x99d18f }) // grass
-    );
-    ground.rotation.x = -Math.PI/2;
-    ground.receiveShadow = true;
-    scene.add(ground);
-  }
-
-  // --- roads (simple grid) -----------------------------------------
-  const roadMat = new THREE.MeshPhongMaterial({ color: 0x333333 });
-  function makeRoad(w, h) {
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), roadMat);
-    m.rotation.x = -Math.PI/2;
-    m.receiveShadow = true;
-    return m;
-  }
-
-  // Build vertical and horizontal roads spanning the city
-  for (let i = -GRID_HALF; i <= GRID_HALF; i++) {
-    const offset = i * (BLOCK_SIZE + ROAD_WIDTH);
-    // Z (north-south) road strip across X
-    const zRoad = makeRoad( (GRID_HALF*2+1)*(BLOCK_SIZE+ROAD_WIDTH)+BLOCK_SIZE, ROAD_WIDTH );
-    zRoad.position.set(0, 0.001, offset);
-    scene.add(zRoad);
-
-    // X (east-west) road strip across Z
-    const xRoad = makeRoad( ROAD_WIDTH, (GRID_HALF*2+1)*(BLOCK_SIZE+ROAD_WIDTH)+BLOCK_SIZE );
-    xRoad.position.set(offset, 0.001, 0);
-    scene.add(xRoad);
-  }
-
-  // Lane lines: thin white planes down the center of each road
-  const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-  for (let i = -GRID_HALF; i <= GRID_HALF; i++) {
-    const offset = i * (BLOCK_SIZE + ROAD_WIDTH);
-    const dashLen = 2, gapLen = 2;
-    const totalLen = (GRID_HALF*2+1)*(BLOCK_SIZE+ROAD_WIDTH)+BLOCK_SIZE;
-    let z = -totalLen/2;
-    while (z < totalLen/2) {
-      const seg = new THREE.Mesh(new THREE.PlaneGeometry(0.3, dashLen), lineMat);
-      seg.rotation.x = -Math.PI/2;
-      seg.position.set(offset, 0.003, z + dashLen/2);
-      scene.add(seg);
-      z += dashLen + gapLen;
-    }
-
-    let x = -totalLen/2;
-    while (x < totalLen/2) {
-      const seg = new THREE.Mesh(new THREE.PlaneGeometry(dashLen, 0.3), lineMat);
-      seg.rotation.x = -Math.PI/2;
-      seg.position.set(x + dashLen/2, 0.003, offset);
-      scene.add(seg);
-      x += dashLen + gapLen;
-    }
-  }
-
-  // --- buildings (instanced for perf) -------------------------------
-  const buildingGeom = new THREE.BoxGeometry(1, 1, 1);
-  const buildingMat = new THREE.MeshLambertMaterial({ color: 0xcccccc });
-  const buildingCount = 800;
-  const buildings = new THREE.InstancedMesh(buildingGeom, buildingMat, buildingCount);
-  scene.add(buildings);
-
-  // --- trees (instanced) --------------------------------------------
-  const trunk = new THREE.CylinderGeometry(0.2, 0.2, 2, 6);
-  const leaves = new THREE.ConeGeometry(1.2, 2.5, 8);
-  const treeMatTrunk = new THREE.MeshLambertMaterial({ color: 0x6b4f2a });
-  const treeMatLeaves = new THREE.MeshLambertMaterial({ color: 0x2e8b57 });
-  const treeTrunks = new THREE.InstancedMesh(trunk, treeMatTrunk, 300);
-  const treeCrowns = new THREE.InstancedMesh(leaves, treeMatLeaves, 300);
-  scene.add(treeTrunks, treeCrowns);
-
-  // Scatter buildings & trees inside blocks (avoid roads)
-  {
-    const tmp = new THREE.Matrix4();
-    const up = new THREE.Vector3(0,1,0);
-    let b = 0, t = 0;
-
-    function inRoad(x, z) {
-      // near any road line?
-      for (let i = -GRID_HALF; i <= GRID_HALF; i++) {
-        const r = i*(BLOCK_SIZE+ROAD_WIDTH);
-        if (Math.abs(z - r) < ROAD_WIDTH*0.5+1) return true;
-        if (Math.abs(x - r) < ROAD_WIDTH*0.5+1) return true;
-      }
-      return false;
-    }
-
-    // Buildings
-    for (let i = 0; i < buildingCount; i++) {
-      const x = (Math.random()*2-1) * CITY_EXTENT;
-      const z = (Math.random()*2-1) * CITY_EXTENT;
-      if (inRoad(x,z)) { i--; continue; }
-
-      const w = 4 + Math.random()*8;
-      const d = 4 + Math.random()*8;
-      const h = 6 + Math.random()*50;
-
-      const m = new THREE.Matrix4()
-        .makeScale(w, h, d)
-        .premultiply(new THREE.Matrix4().makeTranslation(0, 0.5, 0));
-      tmp.identity()
-        .makeRotationY(Math.random()*Math.PI*2)
-        .setPosition(x, 0, z)
-        .multiply(m);
-      buildings.setMatrixAt(b++, tmp);
-    }
-    buildings.count = b;
-    buildings.instanceMatrix.needsUpdate = true;
-
-    // Trees
-    for (let i = 0; i < 300; i++) {
-      const x = (Math.random()*2-1) * CITY_EXTENT;
-      const z = (Math.random()*2-1) * CITY_EXTENT;
-      if (inRoad(x,z)) { i--; continue; }
-
-      const trunkH = 1.8 + Math.random()*0.8;
-      const crownH = 2.0 + Math.random()*1.5;
-      const m1 = new THREE.Matrix4()
-        .makeScale(1, trunkH/2, 1)
-        .premultiply(new THREE.Matrix4().makeTranslation(0, trunkH/2, 0));
-      tmp.identity().setPosition(x, 0, z).multiply(m1);
-      treeTrunks.setMatrixAt(t, tmp);
-
-      const m2 = new THREE.Matrix4()
-        .makeScale(1, crownH/2, 1)
-        .premultiply(new THREE.Matrix4().makeTranslation(0, trunkH + crownH/2 - 0.3, 0));
-      tmp.identity().setPosition(x, 0, z).multiply(m2);
-      treeCrowns.setMatrixAt(t, tmp);
-
-      t++;
-    }
-    treeTrunks.count = t; treeCrowns.count = t;
-    treeTrunks.instanceMatrix.needsUpdate = true;
-    treeCrowns.instanceMatrix.needsUpdate = true;
-  }
-
-  // --- billboards with goofy messages -------------------------------
-  const messages = [
-    "WELCOME TO NAZUGRIT CITY — BOAR CROSSING AHEAD",
-    "HUNGRY? TOO BAD. THIS IS A SIGN, NOT A RESTAURANT.",
-    "TRY OUR INVISIBLE COFFEE — 0 CALORIES, 0 FLAVOR",
-    "WANTED: TREE HUGGER. MUST LOVE SPLINTERS.",
-    "SPEED LIMIT: YES",
-    "NOW HIRING: PROFESSIONAL BUTTON PRESSER",
-    "THIS BILLBOARD LEFT BLANK ON PURPOSE. NARF!"
-  ];
-
-  function makeBillboardTexture(text) {
-    const w = 512, h = 256;
-    const c = document.createElement('canvas'); c.width = w; c.height = h;
-    const ctx = c.getContext('2d');
-    ctx.fillStyle = '#222'; ctx.fillRect(0,0,w,h);
-    ctx.fillStyle = '#0ff';
-    ctx.font = 'bold 36px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    wrapText(ctx, text, w/2, h/2, w-40, 42);
-    const tex = new THREE.CanvasTexture(c);
-    tex.anisotropy = renderer.capabilities.getMaxAnisotropy?.() ?? 1;
-    return tex;
-  }
-  function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
-    const words = text.split(' ');
-    let line = '', lines = [];
-    for (let n=0; n<words.length; n++) {
-      let test = line + words[n] + ' ';
-      if (ctx.measureText(test).width > maxWidth && n>0) {
-        lines.push(line); line = words[n] + ' ';
-      } else line = test;
-    }
-    lines.push(line);
-    const startY = y - ((lines.length-1) * lineHeight)/2;
-    lines.forEach((ln, i) => ctx.fillText(ln.trim(), x, startY + i*lineHeight));
-  }
-
-  const billboardGeom = new THREE.PlaneGeometry(10, 5);
-  const postGeom = new THREE.CylinderGeometry(0.15, 0.15, 6, 6);
-  function addBillboard(x, z, text) {
-    const tex = makeBillboardTexture(text);
-    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
-    const board = new THREE.Mesh(billboardGeom, mat);
-    board.position.set(x, 4, z);
-    board.lookAt(0,4,0);
-
-    const post = new THREE.Mesh(postGeom, new THREE.MeshLambertMaterial({ color: 0x555555 }));
-    post.position.set(x, 3, z);
-    scene.add(post, board);
-    return { board, tex };
-  }
-
-  const billboards = [];
-  for (let i = -GRID_HALF; i <= GRID_HALF; i++) {
-    const x = i*(BLOCK_SIZE+ROAD_WIDTH) + (BLOCK_SIZE/2) * (i%2===0?1:-1);
-    const z = (i%2===0?1:-1) * (BLOCK_SIZE+ROAD_WIDTH) * GRID_HALF;
-    billboards.push(addBillboard(x, z, messages[(i+messages.length)%messages.length]));
-  }
-  // Rotate billboard messages every ~10 seconds
-  let msgTick = 0;
-  function rotateMessages(dt) {
-    msgTick += dt;
-    if (msgTick > 10) {
-      msgTick = 0;
-      for (const b of billboards) {
-        const text = messages[Math.floor(Math.random()*messages.length)];
-        b.tex.dispose();
-        b.board.material.map = makeBillboardTexture(text);
-        b.board.material.needsUpdate = true;
-      }
-    }
-  }
-
-  // --- cars that loop roads -----------------------------------------
-  const carGeom = new THREE.BoxGeometry(2, 1, 4);
-  const carMat = new THREE.MeshLambertMaterial({ color: 0xff5533 });
-  const cars = [];
-  const lanes = [];
-  for (let i = -GRID_HALF; i <= GRID_HALF; i++) {
-    lanes.push({ axis:'z', pos: i*(BLOCK_SIZE+ROAD_WIDTH) + ROAD_WIDTH*0.25, dir: 1 });
-    lanes.push({ axis:'z', pos: i*(BLOCK_SIZE+ROAD_WIDTH) - ROAD_WIDTH*0.25, dir:-1 });
-    lanes.push({ axis:'x', pos: i*(BLOCK_SIZE+ROAD_WIDTH) + ROAD_WIDTH*0.25, dir: 1 });
-    lanes.push({ axis:'x', pos: i*(BLOCK_SIZE+ROAD_WIDTH) - ROAD_WIDTH*0.25, dir:-1 });
-  }
-  const ROAD_SPAN = (GRID_HALF*2+1)*(BLOCK_SIZE+ROAD_WIDTH)+BLOCK_SIZE;
-  for (let i=0; i<24; i++) {
-    const lane = lanes[Math.floor(Math.random()*lanes.length)];
-    const mesh = new THREE.Mesh(carGeom, carMat.clone());
-    mesh.material.color.offsetHSL(Math.random()*0.2, 0, 0);
-    mesh.position.y = 0.6;
-    if (lane.axis === 'z') {
-      mesh.position.x = lane.pos;
-      mesh.position.z = (Math.random()*2-1)*ROAD_SPAN/2;
-      mesh.rotation.y = lane.dir>0 ? 0 : Math.PI;
-    } else {
-      mesh.position.z = lane.pos;
-      mesh.position.x = (Math.random()*2-1)*ROAD_SPAN/2;
-      mesh.rotation.y = lane.dir>0 ? -Math.PI/2 : Math.PI/2;
-    }
-    mesh.userData = { lane, speed: 8 + Math.random()*10 };
-    scene.add(mesh);
-    cars.push(mesh);
-  }
-  function updateCars(dt) {
-    for (const c of cars) {
-      const { lane, speed } = c.userData;
-      if (lane.axis === 'z') {
-        c.position.z += lane.dir * speed * dt;
-        if (c.position.z > ROAD_SPAN/2) c.position.z = -ROAD_SPAN/2;
-        if (c.position.z < -ROAD_SPAN/2) c.position.z = ROAD_SPAN/2;
-      } else {
-        c.position.x += lane.dir * speed * dt;
-        if (c.position.x > ROAD_SPAN/2) c.position.x = -ROAD_SPAN/2;
-        if (c.position.x < -ROAD_SPAN/2) c.position.x = ROAD_SPAN/2;
-      }
-    }
-  }
-
-  // --- locomotion (VR sticks + desktop fallback) --------------------
-  const keys = new Set();
-  addEventListener('keydown', e => keys.add(e.code));
-  addEventListener('keyup', e => keys.delete(e.code));
-  addEventListener('resize', onResize);
-  function onResize() {
-    camera.aspect = innerWidth/innerHeight;
-    camera.updateProjectionMatrix();
+    // ===== Renderer / Scene / Camera =====
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(devicePixelRatio);
     renderer.setSize(innerWidth, innerHeight);
-  }
+    renderer.xr.enabled = true;
+    document.body.appendChild(renderer.domElement);
+    document.body.appendChild(VRButton.createButton(renderer));
 
-  let yaw = 0;
-  const clock = new THREE.Clock();
+    const scene = new THREE.Scene();
 
-  function getXRSticks() {
-    const session = renderer.xr.getSession();
-    const out = { left: { x: 0, y: 0 }, right: { x: 0, y: 0 }, buttons: { left: {}, right: {} } };
-    if (!session) return out;
-    for (const src of session.inputSources) {
-      const gp = src.gamepad;
-      if (!gp) continue;
-      const axes = gp.axes || [];
-      // On Quest, axes length can be 4. Use the last two if so; else use the first two.
-      const ax = axes.length >= 4 ? axes.slice(-2) : axes.slice(0, 2);
-      const stick = { x: ax[0] || 0, y: ax[1] || 0 };
-      const buttons = {};
-      if (gp.buttons) gp.buttons.forEach((b, i) => (buttons[i] = !!b?.pressed));
-      if (src.handedness === 'left') {
-        out.left = stick; out.buttons.left = buttons;
-      } else if (src.handedness === 'right') {
-        out.right = stick; out.buttons.right = buttons;
+    // Fog + sky gradient
+    scene.fog = new THREE.Fog(0xbfe7ff, 20, 80);
+    const sky = makeGradientSky(0x85e4ff, 0xfae3ff);
+    scene.add(sky);
+
+    const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.01, 500);
+    const dolly = new THREE.Group();
+    scene.add(dolly);
+    dolly.add(camera);
+
+    // ===== Lights =====
+    const hemi = new THREE.HemisphereLight(0xfdf7ff, 0x334455, 0.9);
+    scene.add(hemi);
+    const sun = new THREE.DirectionalLight(0xffffff, 0.75);
+    sun.position.set(8, 12, 6);
+    scene.add(sun);
+
+    // ===== Physics =====
+    const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.81, 0) });
+    world.broadphase = new CANNON.SAPBroadphase(world);
+    world.allowSleep = true;
+    const matDefault = new CANNON.Material('default');
+    world.addContactMaterial(new CANNON.ContactMaterial(matDefault, matDefault, { friction:0.3, restitution:0.0 }));
+
+    // Player body
+    const playerRadius = 0.25;
+    const playerBody = new CANNON.Body({
+      mass: 75,
+      shape: new CANNON.Sphere(playerRadius),
+      position: new CANNON.Vec3(0, 1.4, 0),
+      linearDamping: 0.22,
+      material: matDefault
+    });
+    world.addBody(playerBody);
+    const headOffsetY = 1.32;
+
+    // ===== Collections =====
+    const pushSurfaces = [];  // meshes allowed for hand pushing
+    const updatables = [];    // functions(dt, t)
+    const tmpV1 = new THREE.Vector3();
+    const tmpV2 = new THREE.Vector3();
+
+    // ===== Palettes =====
+    const pastel = [
+      0xffc1cc, 0xffe4a3, 0xb9f6a5, 0xa6e3ff, 0xd0b3ff, 0xffc6a5, 0xaef1ff, 0xfde2ff
+    ];
+    const darkEdge = 0x08272d;
+
+    // ===== Level: islands of color =====
+    // Big floor disk to keep you safe-ish
+    addCylinder(40, 1, 0, -0.5, 0, 0x143945, true);
+
+    // Platforms path (colorful boxes)
+    const platforms = [
+      { s:[3,0.4,3], p:[0,1,-3] },
+      { s:[2,0.4,2], p:[2.8,2.0,-1.5] },
+      { s:[1.5,0.4,1.5], p:[4.8,3.0,1.4] },
+      { s:[2.0,0.4,2.0], p:[7.2,4.2,3.6] },
+      { s:[1.2,0.4,1.2], p:[9.3,5.6,5.9] }
+    ];
+    platforms.forEach((pl, i)=>{
+      addBox(pl.s[0], pl.s[1], pl.s[2], pl.p[0], pl.p[1], pl.p[2], pastel[i % pastel.length], true);
+    });
+
+    // A tilted ramp (launch pad)
+    const ramp = addBox(3.2, 0.3, 2.2, 3.6, 1.28, -3.8, 0x2c4a7a, true);
+    ramp.rotation.set(-Math.PI/10, 0, 0);
+    ramp.userData.body.quaternion.setFromEuler(-Math.PI/10, 0, 0);
+
+    // Moving platform (gentle bob)
+    const mover = addBox(2.2, 0.35, 2.2, 11.2, 6.8, 7.2, 0xffd3a1, true);
+    mover.userData.basePos = mover.position.clone();
+    updatables.push((dt, t)=>{
+      const y = Math.sin(t*0.6)*0.6;
+      const x = Math.cos(t*0.3)*0.4;
+      mover.position.set(mover.userData.basePos.x + x, mover.userData.basePos.y + y, mover.userData.basePos.z);
+      mover.userData.body.position.set(mover.position.x, mover.position.y, mover.position.z);
+      mover.userData.body.velocity.set(0,0,0); // kinematic
+    });
+
+    // Rainbow goal ring that pulses
+    const goal = makeGoalRing(new THREE.Vector3(13.8, 7.4, 9.5));
+    scene.add(goal.group);
+
+    // Sprinkle trees around (instanced for perf)
+    plantTrees([
+      new THREE.Vector3(-6, 0, -3),
+      new THREE.Vector3(5, 0, -6),
+      new THREE.Vector3(10, 0, 2),
+      new THREE.Vector3(8, 0, 8),
+      new THREE.Vector3(2, 0, 5),
+      new THREE.Vector3(-3, 0, 6),
+      new THREE.Vector3(12, 0, 12),
+    ]);
+
+    // Weird little signs with sayings
+    const sayings = [
+      "NO GODS. NO BUGS. ONLY VIBES.",
+      "DO NOT PET THE VOID.",
+      "GRAVITY IS A SUGGESTION.",
+      "MAKE WIDE CHOICES.",
+      "ALL YEET, NO FEET.",
+      "YOU ARE TEMPORARY; THE FLOOR IS FOREVER.",
+      "BEWARE OF LOW-POLY BEARS.",
+      "THIS SIGN LEFT INTENTIONALLY WEIRD.",
+      "HUG TREES. THEY’RE SPIKY AIR FILTERS.",
+      "SPEED IS JUST SPICY POSITION.",
+      "NARF! AUTHORIZED PERSONNEL ONLY.",
+      "PLEASE SCREAM IN PASTEL."
+    ];
+    addSign(new THREE.Vector3(0.2, 1.2, -4.2), THREE.MathUtils.randInt(0,1)? sayings[0] : sayings[1]);
+    addSign(new THREE.Vector3(3.2, 2.2, -2.0), sayings[2]);
+    addSign(new THREE.Vector3(5.0, 3.1, 2.2), sayings[3]);
+    addSign(new THREE.Vector3(7.4, 4.6, 4.2), sayings[4]);
+    addSign(new THREE.Vector3(10.2, 6.0, 6.4), sayings[5]);
+
+    // A few sparkly pickups (because shiny)
+    const pickups = [];
+    for (let i=0;i<6;i++){
+      const p = makePickup();
+      p.position.set(
+        1.5 + Math.random()*10,
+        2.2 + Math.random()*4.5,
+        -1.6 + Math.random()*9
+      );
+      scene.add(p);
+      pickups.push(p);
+    }
+
+    // ===== Controllers (hands) =====
+    const controller0 = renderer.xr.getController(0);
+    const controller1 = renderer.xr.getController(1);
+    dolly.add(controller0); dolly.add(controller1);
+    const hands = [ makeHandState(controller0, 0x66ffc2), makeHandState(controller1, 0xffaaff) ];
+
+    function makeHandState(ctrl, color){
+      const s = {
+        ctrl,
+        isPlanting: false,
+        lastPos: new THREE.Vector3(),
+        velocity: new THREE.Vector3(),
+        sphere: new THREE.Mesh(new THREE.SphereGeometry(0.05, 16, 12),
+                 new THREE.MeshBasicMaterial({ color, transparent:true, opacity:0.6 }))
+      };
+      s.sphere.visible = false;
+      ctrl.add(s.sphere);
+      ctrl.addEventListener('selectstart', ()=>{ s.isPlanting = true;  s.sphere.visible = true;  });
+      ctrl.addEventListener('selectend',   ()=>{ s.isPlanting = false; s.sphere.visible = false; });
+      ctrl.addEventListener('squeezestart',()=>{ s.isPlanting = true;  s.sphere.visible = true;  });
+      ctrl.addEventListener('squeezeend',  ()=>{ s.isPlanting = false; s.sphere.visible = false; });
+      return s;
+    }
+
+    // ===== Vignette =====
+    const vignette = makeVignette();
+    camera.add(vignette);
+
+    // ===== Raycaster for push normals =====
+    const raycaster = new THREE.Raycaster();
+    const worldUp = new THREE.Vector3(0,1,0);
+
+    // ===== Push params =====
+    const PUSH_GAIN = 1.5;
+    const MAX_SPEED = 8.0;
+    const SURFACE_MAX_DIST = 0.08;
+    const NORMAL_DOT_MIN = 0.35;
+    const UPWARD_ASSIST = 0.6;
+    const BIG_PUSH_COOLDOWN = 0.028;
+    let lastBigPushT = 0;
+
+    // ===== Timer / reset =====
+    const clock = new THREE.Clock();
+    function resetRun(){
+      playerBody.velocity.set(0,0,0);
+      playerBody.angularVelocity.set(0,0,0);
+      playerBody.position.set(0, 1.4, 0);
+      playerBody.quaternion.set(0,0,0,1);
+    }
+    resetRun();
+
+    // ===== Resize =====
+    addEventListener('resize', ()=>{
+      camera.aspect = innerWidth/innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    // ===== Animate =====
+    renderer.setAnimationLoop(onXRFrame);
+
+    function onXRFrame(){
+      const dt = Math.min(clock.getDelta(), 0.033);
+      const t  = performance.now()/1000;
+
+      // Physics step
+      const fixed = 1/90; let acc = dt;
+      while (acc > 0) { world.step(fixed, Math.min(acc, fixed), 2); acc -= fixed; }
+
+      // Move dolly to physics body (head above)
+      dolly.position.set(playerBody.position.x, playerBody.position.y + headOffsetY, playerBody.position.z);
+
+      // Updatables (moving platforms, goal pulse, pickups spin)
+      for (const u of updatables) u(dt, t);
+      goal.update(dt, t);
+      pickups.forEach(p=>{
+        p.rotation.y += dt*1.8;
+        p.material.emissiveIntensity = 0.8 + Math.sin(t*2.5 + p.userData.phase)*0.6;
+      });
+
+      // Billboard signs to face player horizontally
+      billboardAllSigns();
+
+      // Hand pushes
+      const speed = playerBody.velocity.length();
+      vignette.material.uniforms.uIntensity.value =
+        THREE.MathUtils.clamp((speed - 1.5) / (MAX_SPEED - 1.5), 0, 0.6);
+
+      const now = t;
+      for (const h of hands){
+        h.ctrl.updateMatrixWorld();
+        const pos = tmpV1.setFromMatrixPosition(h.ctrl.matrixWorld).clone();
+        h.velocity.copy(pos).sub(h.lastPos).divideScalar(dt);
+        h.lastPos.copy(pos);
+        if (!h.isPlanting) continue;
+
+        // Probe for surface near hand; prefer surface roughly in front of palm
+        const forward = new THREE.Vector3(0,0,-1).applyQuaternion(h.ctrl.quaternion);
+        const contact = probeContact(pos, forward);
+        if (!contact) continue;
+
+        const n = contact.normal;
+        if (n.dot(worldUp) < -0.98) continue;
+
+        const vn = n.clone().multiplyScalar(h.velocity.dot(n));
+        const tangential = h.velocity.clone().sub(vn);
+        if (tangential.lengthSq() < 1e-4) continue;
+
+        const impulseDir = tangential.clone().normalize().multiplyScalar(-1);
+        const mag = tangential.length() * PUSH_GAIN;
+
+        if (now - lastBigPushT > BIG_PUSH_COOLDOWN) {
+          applyImpulse(impulseDir.multiplyScalar(mag));
+          lastBigPushT = now;
+          if (n.y > 0.6) applyImpulse(new CANNON.Vec3(0, UPWARD_ASSIST, 0));
+        }
+
+        // Clamp top speed
+        const v = playerBody.velocity;
+        const len = v.length();
+        if (len > MAX_SPEED) v.scale(MAX_SPEED / (len + 1e-6), v);
+      }
+
+      // Goal check
+      if (dolly.position.distanceTo(goal.group.position) < 1.2) {
+        goal.burst();
+        setTimeout(()=> resetRun(), 200);
+      }
+
+      // Pickup check
+      for (const p of pickups){
+        if (!p.visible) continue;
+        if (dolly.position.distanceTo(p.position) < 0.8){
+          p.visible = false;
+          // tiny celebratory nudge upward
+          applyImpulse(new CANNON.Vec3(0, 0.8, 0));
+        }
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    // ===== Helpers =====
+    function applyImpulse(vec3){
+      const imp = (vec3.isCANNON) ? vec3 : new CANNON.Vec3(vec3.x, vec3.y, vec3.z);
+      playerBody.applyImpulse(imp, playerBody.position);
+    }
+
+    function probeContact(origin, forward){
+      // Only push against approved surfaces
+      const dirs = [
+        forward.clone(),
+        forward.clone().add(new THREE.Vector3(0,0.25,0)).normalize(),
+        forward.clone().add(new THREE.Vector3(0,-0.25,0)).normalize(),
+        forward.clone().multiplyScalar(-1)
+      ];
+      for (const d of dirs){
+        raycaster.set(origin.clone().addScaledVector(d, 0.06), d);
+        raycaster.far = SURFACE_MAX_DIST + 0.1;
+        const hits = raycaster.intersectObjects(pushSurfaces, false);
+        if (hits.length){
+          const hit = hits[0];
+          if (hit.face){
+            const n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+            if (n.lengthSq() > 0.2 && n.dot(d) < -NORMAL_DOT_MIN) {
+              return { point: hit.point, normal: n };
+            }
+          }
+        }
+      }
+      return null;
+    }
+
+    // ------- Geometry factories -------
+    function addBox(w, h, d, x, y, z, color=0xcccccc, pushable=false){
+      const geo = new THREE.BoxGeometry(w, h, d);
+      const mat = new THREE.MeshStandardMaterial({ color, roughness:0.85, metalness:0.0 });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(x,y,z);
+      mesh.receiveShadow = mesh.castShadow = false;
+      scene.add(mesh);
+
+      // pretty edges
+      const edge = new THREE.LineBasicMaterial({ color: 0x001b1f, transparent:true, opacity:0.22 });
+      const lines = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), edge);
+      mesh.add(lines);
+
+      // physics
+      const body = new CANNON.Body({
+        mass: 0,
+        shape: new CANNON.Box(new CANNON.Vec3(w/2, h/2, d/2)),
+        position: new CANNON.Vec3(x,y,z),
+        material: matDefault
+      });
+      world.addBody(body);
+      mesh.userData.body = body;
+
+      if (pushable) pushSurfaces.push(mesh);
+      return mesh;
+    }
+
+    function addCylinder(diameter, h, x, y, z, color=0x99ccff, pushable=false){
+      const r = diameter*0.5;
+      const geo = new THREE.CylinderGeometry(r, r, h, 24, 1, false);
+      const mat = new THREE.MeshStandardMaterial({ color, roughness:0.9, metalness:0.0 });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(x,y + h/2, z);
+      mesh.receiveShadow = mesh.castShadow = false;
+      scene.add(mesh);
+
+      // edges
+      const edge = new THREE.LineBasicMaterial({ color: darkEdge, transparent:true, opacity:0.15 });
+      const lines = new THREE.LineSegments(new THREE.EdgesGeometry(geo), edge);
+      mesh.add(lines);
+
+      // physics
+      const body = new CANNON.Body({
+        mass: 0,
+        shape: new CANNON.Cylinder(r, r, h, 16),
+        position: new CANNON.Vec3(x, y + h/2, z),
+        material: matDefault
+      });
+      // Cannon cylinder orientation fix: rotate to align with Y
+      const q = new CANNON.Quaternion(); q.setFromEuler(Math.PI/2, 0, 0, 'XYZ');
+      body.shapeOrientations[0] = q;
+      world.addBody(body);
+      mesh.userData.body = body;
+
+      if (pushable) pushSurfaces.push(mesh);
+      return mesh;
+    }
+
+    function makeGradientSky(top=0x87ceeb, bottom=0xffffff){
+      const geo = new THREE.SphereGeometry(200, 32, 16);
+      const mat = new THREE.ShaderMaterial({
+        side: THREE.BackSide, depthWrite:false,
+        uniforms: { top:{value:new THREE.Color(top)}, bottom:{value:new THREE.Color(bottom)} },
+        vertexShader: `
+          varying vec3 vPos;
+          void main(){ vPos = position; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }
+        `,
+        fragmentShader: `
+          varying vec3 vPos;
+          uniform vec3 top; uniform vec3 bottom;
+          void main(){
+            float h = normalize(vPos).y*0.5+0.5;
+            gl_FragColor = vec4(mix(bottom, top, smoothstep(0.0, 1.0, h)), 1.0);
+          }
+        `
+      });
+      return new THREE.Mesh(geo, mat);
+    }
+
+    function makePickup(){
+      const geo = new THREE.IcosahedronGeometry(0.12, 0);
+      const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0x55ffff, emissiveIntensity: 1.2, roughness:0.4, metalness:0.2 });
+      const m = new THREE.Mesh(geo, mat);
+      m.userData.phase = Math.random()*Math.PI*2;
+      return m;
+    }
+
+    function makeGoalRing(pos){
+      const group = new THREE.Group();
+      group.position.copy(pos);
+
+      const tor = new THREE.TorusGeometry(0.8, 0.12, 16, 64);
+      const mat = new THREE.ShaderMaterial({
+        uniforms: { uTime:{value:0} },
+        transparent:false,
+        vertexShader: `
+          varying vec2 vUv;
+          void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }
+        `,
+        fragmentShader: `
+          varying vec2 vUv; uniform float uTime;
+          // simple rainbow along U
+          vec3 hsv2rgb(vec3 c){ vec3 p=abs(fract(c.xxx+vec3(1.,2./3.,1./3.))*6.-3.); return c.z*mix(vec3(1.), clamp(p-1.,0.,1.), c.y); }
+          void main(){
+            float u = fract(vUv.x + uTime*0.08);
+            vec3 col = hsv2rgb(vec3(u, 0.9, 1.0));
+            gl_FragColor = vec4(col, 1.0);
+          }
+        `
+      });
+      const ring = new THREE.Mesh(tor, mat);
+      group.add(ring);
+
+      // little spark sprites
+      const sparks = [];
+      for (let i=0;i<10;i++){
+        const s = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), new THREE.MeshStandardMaterial({ color:0xffffff, emissive:0xfff3a0, emissiveIntensity:1.0 }));
+        s.position.set(Math.cos(i)*1.1, (i%2?0.2:-0.2), Math.sin(i)*1.1);
+        group.add(s); sparks.push(s);
+      }
+
+      return {
+        group,
+        update(dt, t){
+          ring.material.uniforms.uTime.value = t;
+          ring.rotation.y += dt*0.5;
+          sparks.forEach((s, i)=>{
+            s.scale.setScalar(0.7 + Math.sin(t*3 + i)*0.3);
+          });
+        },
+        burst(){
+          sparks.forEach((s,i)=> s.material.emissiveIntensity = 2.5);
+          setTimeout(()=> sparks.forEach(s=> s.material.emissiveIntensity = 1.0), 200);
+        }
+      };
+    }
+
+    // ------- Trees (instanced) -------
+    function plantTrees(positions){
+      // Trunk (cylinder)
+      const trunkGeo = new THREE.CylinderGeometry(0.08, 0.1, 0.8, 8);
+      const trunkMat = new THREE.MeshStandardMaterial({ color: 0x7a4a2a, roughness:0.9, metalness:0.0 });
+      const trunkInst = new THREE.InstancedMesh(trunkGeo, trunkMat, positions.length);
+      // Foliage (cone)
+      const leafGeo = new THREE.ConeGeometry(0.55, 1.1, 8);
+      const leafMat = new THREE.MeshStandardMaterial({ color: 0x4dd18a, roughness:0.8, metalness:0.0 });
+      const leafInst = new THREE.InstancedMesh(leafGeo, leafMat, positions.length);
+
+      const m = new THREE.Matrix4(); const q = new THREE.Quaternion();
+      positions.forEach((p, i)=>{
+        // place on floor (y=0.5 average), slight random scale
+        const s = 0.9 + Math.random()*0.4;
+        m.compose(new THREE.Vector3(p.x, 0.4, p.z), q, new THREE.Vector3(1,1,1));
+        trunkInst.setMatrixAt(i, m);
+        m.compose(new THREE.Vector3(p.x, 1.0, p.z), q, new THREE.Vector3(s, s, s));
+        leafInst.setMatrixAt(i, m);
+      });
+
+      scene.add(trunkInst); scene.add(leafInst);
+
+      // Add *trunks* (not leaves) as pushable so you can monkey off trees
+      // Create invisible simple cylinders as push meshes that match
+      positions.forEach((p)=>{
+        const coll = addCylinder(0.22, 1.1, p.x, 0.0, p.z, 0x000000, true);
+        coll.visible = false; // keep the collision-only cylinder hidden
+      });
+    }
+
+    // ------- Signs -------
+    const signMeshes = [];
+    function addSign(pos, text){
+      const tex = makeSignTexture(text);
+      const geo = new THREE.PlaneGeometry(0.9, 0.6);
+      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+      const m = new THREE.Mesh(geo, mat);
+      m.position.copy(pos);
+      m.position.y += 0.2;
+      scene.add(m);
+      signMeshes.push(m);
+
+      // tiny post
+      const post = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.02, 0.02, 0.4, 6),
+        new THREE.MeshStandardMaterial({ color: 0x6b6b6b, roughness:0.9 })
+      );
+      post.position.set(pos.x, pos.y - 0.1, pos.z);
+      scene.add(post);
+
+      // collision box so you can push off the sign
+      const signBox = addBox(0.95, 0.65, 0.06, pos.x, pos.y+0.2, pos.z-0.02, 0x000000, true);
+      signBox.visible = false;
+    }
+
+    function billboardAllSigns(){
+      for (const m of signMeshes){
+        m.lookAt(dolly.position.x, m.position.y, dolly.position.z);
       }
     }
-    return out;
-  }
+
+    function makeSignTexture(text){
+      const c = document.createElement('canvas');
+      c.width = 512; c.height = 384;
+      const ctx = c.getContext('2d');
+      // bg
+      const hues = [10, 45, 120, 180, 260, 300];
+      const h = hues[Math.floor(Math.random()*hues.length)];
+      ctx.fillStyle = `hsl(${h}, 75%, 65%)`;
+      ctx.fillRect(0,0,c.width,c.height);
+      // border
+      ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+      ctx.lineWidth = 16; ctx.strokeRect(10,10,c.width-20,c.height-20);
+      // text
+      ctx.fillStyle = '#08272d';
+      ctx.font = '700 42px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+      wrapText(ctx, text, 40, 90, c.width-80, 56);
+      // sticker
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.fillRect(c.width-160, 20, 140, 44);
+      ctx.fillStyle = '#000';
+      ctx.font = '700 22px system-ui';
+      ctx.fillText('WEIRD ZONE', c.width-150, 50);
+
+      const tex = new THREE.CanvasTexture(c);
+      tex.anisotropy = 4;
+      tex.needsUpdate = true;
+      return tex;
     }
-    return { left, right };
-  }
 
-  function movePlayer(dt) {
-    // VR sticks
-    const { left, right } = getXRSticks();
-    const stickDead = (v) => Math.abs(v) < 0.12 ? 0 : v;
-    const lx = stickDead(left.x), ly = stickDead(left.y);
-    const rx = stickDead(right.x), ry = stickDead(right.y);
+    function wrapText(ctx, text, x, y, maxWidth, lineHeight){
+      const words = text.split(' ');
+      let line = '';
+      for (let n = 0; n < words.length; n++) {
+        const testLine = line + words[n] + ' ';
+        const metrics = ctx.measureText(testLine);
+        if (metrics.width > maxWidth && n > 0) {
+          ctx.fillText(line, x, y);
+          line = words[n] + ' ';
+          y += lineHeight;
+        } else {
+          line = testLine;
+        }
+      }
+      ctx.fillText(line, x, y);
+    }
 
-    // Speeds
-    const speed = 10; // m/s-ish (we zoom)
-    const turnSpeed = 1.8; // rad/s
-    const flySpeed = 10; // vertical m/s
-
-    // Inputs
-    let movX = lx, movY = ly, turn = rx;
-    let climb = -ry; // push stick up to go up
-
-    // Desktop fallback
-    if (keys.has('KeyW')) movY = -1;
-    if (keys.has('KeyS')) movY = 1;
-    if (keys.has('KeyA')) movX = -1;
-    if (keys.has('KeyD')) movX = 1;
-    if (keys.has('KeyQ')) yaw += turnSpeed*dt;
-    if (keys.has('KeyE')) yaw -= turnSpeed*dt;
-    if (keys.has('Space')) climb += 1;
-    if (keys.has('KeyC') || keys.has('ShiftLeft')) climb -= 1;
-
-    // Turning
-    yaw -= turn * turnSpeed * dt; // right stick X to turn
-
-    // Move relative to camera facing (horizontal plane)
-    const dir = new THREE.Vector3();
-    camera.getWorldDirection(dir);
-    dir.y = 0; dir.normalize();
-    const rightVec = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0,1,0)).normalize().negate();
-
-    const forward = dir.clone().multiplyScalar(-movY * speed * dt);
-    const strafe  = rightVec.clone().multiplyScalar(movX * speed * dt);
-    dolly.position.add(forward).add(strafe);
-
-    // Vertical (fly)
-    dolly.position.y += climb * flySpeed * dt;
-    if (dolly.position.y < 0) dolly.position.y = 0; // don't go underground
-
-    // Apply yaw around the player
-    dolly.rotation.y = yaw;
-  }
-
-  // Start player a bit above the ground
-  dolly.position.set(0, 0, CITY_EXTENT * 0.6);
-
-  // --- animation loop -----------------------------------------------
-  renderer.setAnimationLoop(() => {
-    const dt = Math.min(0.033, clock.getDelta());
-    movePlayer(dt);
-    updateCars(dt);
-    rotateMessages(dt);
-    renderer.render(scene, camera);
-  });
-
-  // lil vibe: sun “moves” slowly (not physically accurate, we’re chill)
-  setInterval(() => {
-    sun.position.applyAxisAngle(new THREE.Vector3(0,1,0), 0.003);
-  }, 30);
-
+    // ------- Vignette -------
+    function makeVignette(){
+      const g = new THREE.PlaneGeometry(2,2,1,1);
+      const m = new THREE.ShaderMaterial({
+        transparent: true, depthTest: false,
+        uniforms: { uIntensity: { value: 0.0 } },
+        vertexShader: `
+          varying vec2 vUv;
+          void main(){ vUv=uv; gl_Position=vec4(position.xy, 0.999, 1.0); }
+        `,
+        fragmentShader: `
+          varying vec2 vUv; uniform float uIntensity;
+          void main(){
+            vec2 c = vUv - 0.5;
+            float r = length(c)*1.4;
+            float v = smoothstep(0.3, 1.0, r) * uIntensity;
+            gl_FragColor = vec4(0.0,0.0,0.0, v);
+          }
+        `
+      });
+      const mesh = new THREE.Mesh(g, m); mesh.renderOrder = 999; return mesh;
+    }
   </script>
 </body>
 </html>
