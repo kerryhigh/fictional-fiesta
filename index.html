@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Order Smash VR — WebXR mini‑game</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #050510; }
+    #ui {
+      position: fixed; left: 12px; top: 12px; z-index: 10;
+      background: rgba(0,0,0,.45); color: #fff; font: 600 16px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      padding: 10px 12px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,.25);
+      user-select: none; -webkit-user-select: none;
+    }
+    #msg {
+      position: fixed; inset: 0; display: grid; place-items: center; z-index: 9; pointer-events: none;
+      font: 700 20px/1.3 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: #e9ecff;
+      text-shadow: 0 2px 12px rgba(0,0,0,.6);
+    }
+    #msg .panel {
+      background: linear-gradient(180deg, rgba(25,25,60,.9), rgba(10,10,25,.85));
+      padding: 18px 20px; border-radius: 16px; box-shadow: 0 12px 60px rgba(0,0,0,.55);
+      border: 1px solid rgba(255,255,255,.08);
+      max-width: 540px; text-align: center;
+    }
+    a.link { color: #9cc2ff; text-decoration: none; border-bottom: 1px dashed rgba(156,194,255,.6); }
+  </style>
+</head>
+<body>
+  <div id="ui">Score: <span id="score">0</span> · Time: <span id="time">60.0</span>s · Best: <span id="best">0</span></div>
+  <div id="msg"><div class="panel" id="panelText">Loading…</div></div>
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+    import { VRButton } from 'https://unpkg.com/three@0.160.0/examples/jsm/webxr/VRButton.js';
+
+    // ——— core setup ———
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(0x050510, 8, 20);
+    scene.background = new THREE.Color(0x050510);
+
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 50);
+    camera.position.set(0, 1.6, 0);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.xr.enabled = true;
+    document.body.appendChild(renderer.domElement);
+    document.body.appendChild(VRButton.createButton(renderer));
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // ——— lights & stage ———
+    const hemi = new THREE.HemisphereLight(0xddeeff, 0x334466, 1.0);
+    scene.add(hemi);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+    dir.position.set(3, 6, 2);
+    scene.add(dir);
+
+    const grid = new THREE.GridHelper(14, 28, 0x334466, 0x112244);
+    grid.position.y = -0.001;
+    scene.add(grid);
+
+    // fun ambient blobs
+    const blobby = new THREE.Group();
+    scene.add(blobby);
+    for (let i = 0; i < 18; i++) {
+      const g = new THREE.IcosahedronGeometry(0.06 + Math.random() * 0.12, 0);
+      const m = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(Math.random(), 0.5, 0.55), emissive: 0x111122, roughness: 0.7, metalness: 0.05 });
+      const mesh = new THREE.Mesh(g, m);
+      mesh.position.set((Math.random() - 0.5) * 6, 0.8 + Math.random() * 2.2, -2 - Math.random() * 3);
+      blobby.add(mesh);
+    }
+
+    // ——— controllers ———
+    function makePaddle(color = 0xffbb33) {
+      const g = new THREE.CapsuleGeometry(0.024, 0.26, 8, 16);
+      const m = new THREE.MeshStandardMaterial({ color, emissive: 0x331100, emissiveIntensity: 0.4, metalness: 0.2, roughness: 0.5 });
+      const mesh = new THREE.Mesh(g, m);
+      mesh.rotation.z = Math.PI * 0.5;
+      return mesh;
+    }
+
+    const controller1 = renderer.xr.getController(0);
+    const controller2 = renderer.xr.getController(1);
+    controller1.addEventListener('connected', (e) => (controller1.userData.inputSource = e.data));
+    controller1.addEventListener('disconnected', () => (controller1.userData.inputSource = null));
+    controller2.addEventListener('connected', (e) => (controller2.userData.inputSource = e.data));
+    controller2.addEventListener('disconnected', () => (controller2.userData.inputSource = null));
+
+    controller1.add(makePaddle(0xffbb55));
+    controller2.add(makePaddle(0x66ddff));
+    scene.add(controller1, controller2);
+
+    const CSTATE = () => ({ ctrl: null, world: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), init: false });
+    const cs1 = CSTATE(); cs1.ctrl = controller1;
+    const cs2 = CSTATE(); cs2.ctrl = controller2;
+
+    // ——— game state ———
+    let playing = false;
+    let score = 0;
+    let best = Number(localStorage.getItem('orderSmashHigh') || 0);
+    let timeLeft = 60;
+    let spawnAccum = 0;
+    const uiScore = document.getElementById('score');
+    const uiTime = document.getElementById('time');
+    const uiBest = document.getElementById('best'); uiBest.textContent = best;
+    const msg = document.getElementById('msg');
+    const panelText = document.getElementById('panelText');
+
+    const targets = [];
+    const particles = [];
+    const palette = [0xf94144, 0xf3722c, 0xf8961e, 0xf9c74f, 0x43aa8b, 0x577590];
+    const targetGeo = new THREE.BoxGeometry(0.16, 0.16, 0.16);
+
+    function setPanel(html) {
+      panelText.innerHTML = html;
+    }
+
+    function setHUD() {
+      uiScore.textContent = String(score);
+      uiTime.textContent = timeLeft.toFixed(1);
+      uiBest.textContent = String(best);
+    }
+
+    function showIntro() {
+      setPanel(`
+        <div style="font-size:22px; margin-bottom:6px">Order Smash VR</div>
+        <div style="opacity:.9; margin-bottom:10px">Bat the incoming cubes to pop them. Swing with some speed for a hit.<br/>60‑second run. Haptics on hit (if your controllers support it).</div>
+        <div style="opacity:.85; font-weight:600;">Click “Enter VR” then press <em>trigger</em> to start.</div>
+        <div style="opacity:.7; margin-top:8px; font-size:13px">Pro tip: the spawn rate scales with your score. Keep up.</div>
+      `);
+      msg.style.display = '';
+    }
+
+    function startGame() {
+      // clear scene targets/particles
+      for (let i = targets.length - 1; i >= 0; i--) removeTarget(i);
+      for (let i = particles.length - 1; i >= 0; i--) removeParticle(i);
+      score = 0; timeLeft = 60; spawnAccum = 0; playing = true; setHUD();
+      msg.style.display = 'none';
+    }
+
+    function gameOver() {
+      playing = false;
+      if (score > best) { best = score; localStorage.setItem('orderSmashHigh', String(best)); }
+      setHUD();
+      setPanel(`<div style="font-size:22px; margin-bottom:6px">Time!</div>
+        <div style="margin-bottom:8px">Score: <b>${score}</b> · Best: <b>${best}</b></div>
+        <div style="opacity:.9">Press <em>trigger</em> to go again.</div>`);
+      msg.style.display = '';
+    }
+
+    function maybeStart() { if (!playing && renderer.xr.isPresenting) startGame(); }
+    controller1.addEventListener('selectstart', maybeStart);
+    controller2.addEventListener('selectstart', maybeStart);
+
+    // ——— targets ———
+    function spawnTarget() {
+      const mat = new THREE.MeshStandardMaterial({ color: palette[(Math.random() * palette.length) | 0], roughness: 0.65, metalness: 0.08, emissive: 0x0, envMapIntensity: 0.2 });
+      const mesh = new THREE.Mesh(targetGeo, mat);
+      const angle = (Math.random() - 0.5) * Math.PI * 0.9; // front arc
+      const r = 2.0 + Math.random() * 2.2;
+      const y = 1.0 + Math.random() * 1.8;
+      mesh.position.set(Math.sin(angle) * r, y, -2.2 - Math.random() * 3.6);
+      mesh.userData = {
+        vel: new THREE.Vector3((Math.random() - 0.5) * 0.24, (Math.random() - 0.35) * 0.18, 0.12 + Math.random() * 0.18),
+        rot: new THREE.Vector3(Math.random() * 1.2, Math.random() * 1.2, Math.random() * 1.2),
+        radius: 0.13,
+        life: 24
+      };
+      scene.add(mesh);
+      targets.push(mesh);
+    }
+
+    function removeTarget(i) {
+      const t = targets[i];
+      if (!t) return;
+      scene.remove(t);
+      t.geometry.dispose();
+      t.material.dispose();
+      targets.splice(i, 1);
+    }
+
+    // ——— particles ———
+    function popAt(pos, color) {
+      const n = 70;
+      const positions = new Float32Array(n * 3);
+      const velocities = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        positions[3 * i + 0] = pos.x;
+        positions[3 * i + 1] = pos.y;
+        positions[3 * i + 2] = pos.z;
+        const dir = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.2, Math.random() - 0.5).normalize().multiplyScalar(0.8 + Math.random() * 1.2);
+        velocities[3 * i + 0] = dir.x;
+        velocities[3 * i + 1] = dir.y;
+        velocities[3 * i + 2] = dir.z;
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      g.setAttribute('velocity', new THREE.BufferAttribute(velocities, 3));
+      const m = new THREE.PointsMaterial({ size: 0.03, color, transparent: true, opacity: 1 });
+      const p = new THREE.Points(g, m);
+      p.userData = { life: 0.7 };
+      scene.add(p);
+      particles.push(p);
+    }
+
+    function removeParticle(i) {
+      const p = particles[i];
+      if (!p) return;
+      scene.remove(p);
+      p.geometry.dispose();
+      p.material.dispose();
+      particles.splice(i, 1);
+    }
+
+    // ——— haptics ———
+    function pulse(ctrl, strength = 0.7, ms = 60) {
+      const is = ctrl.userData.inputSource;
+      const h = is && is.gamepad && is.gamepad.hapticActuators && is.gamepad.hapticActuators[0];
+      try { h && h.pulse && h.pulse(strength, ms); } catch (_) {}
+    }
+
+    // ——— helpers ———
+    function updateControllerState(cs, dt) {
+      cs.ctrl.getWorldPosition(cs.world);
+      if (!cs.init) { cs.prev.copy(cs.world); cs.init = true; }
+      cs.vel.copy(cs.world).sub(cs.prev).multiplyScalar(1 / dt);
+      cs.prev.copy(cs.world);
+    }
+
+    function checkHit(target, cs) {
+      const dist = target.position.distanceTo(cs.world);
+      const speed = cs.vel.length();
+      return dist < (target.userData.radius + 0.12) && speed > 0.7; // needs a real swing
+    }
+
+    // ——— session hooks ———
+    renderer.xr.addEventListener('sessionstart', () => {
+      showIntro();
+    });
+    renderer.xr.addEventListener('sessionend', () => {
+      msg.style.display = '';
+      setPanel('<div style="font-size:18px">Exited VR — refresh or re‑enter to play again.</div>');
+      playing = false;
+    });
+
+    // ——— main loop ———
+    const clock = new THREE.Clock();
+    showIntro();
+
+    function animate() {
+      const dt = Math.min(clock.getDelta(), 0.05);
+
+      // floaty ambiance
+      blobby.children.forEach((m, i) => {
+        m.position.y += Math.sin(performance.now() * 0.001 + i) * 0.0006;
+        m.rotation.y += 0.2 * dt;
+      });
+
+      updateControllerState(cs1, dt);
+      updateControllerState(cs2, dt);
+
+      if (playing) {
+        timeLeft -= dt; if (timeLeft <= 0) { timeLeft = 0; gameOver(); }
+        spawnAccum += dt;
+        const rate = Math.max(0.38, 1.2 - score * 0.02); // adaptive spawn
+        if (spawnAccum >= rate) { spawnAccum = 0; spawnTarget(); }
+
+        for (let i = targets.length - 1; i >= 0; i--) {
+          const t = targets[i];
+          t.position.addScaledVector(t.userData.vel, dt);
+          t.rotation.x += t.userData.rot.x * dt;
+          t.rotation.y += t.userData.rot.y * dt;
+          t.rotation.z += t.userData.rot.z * dt;
+          t.userData.life -= dt;
+          if (t.userData.life <= 0 || t.position.z > 0.3) { removeTarget(i); continue; }
+          if (checkHit(t, cs1) || checkHit(t, cs2)) {
+            popAt(t.position, t.material.color.getHex());
+            pulse(controller1); pulse(controller2);
+            removeTarget(i);
+            score++;
+          }
+        }
+
+        for (let i = particles.length - 1; i >= 0; i--) {
+          const p = particles[i];
+          const pos = p.geometry.attributes.position;
+          const vel = p.geometry.attributes.velocity;
+          for (let j = 0; j < pos.count; j++) {
+            vel.array[3 * j + 1] -= 0.9 * dt; // tiny gravity
+            pos.array[3 * j + 0] += vel.array[3 * j + 0] * dt;
+            pos.array[3 * j + 1] += vel.array[3 * j + 1] * dt;
+            pos.array[3 * j + 2] += vel.array[3 * j + 2] * dt;
+          }
+          p.geometry.attributes.position.needsUpdate = true;
+          p.userData.life -= dt;
+          p.material.opacity = Math.max(0, p.userData.life / 0.7);
+          if (p.userData.life <= 0) removeParticle(i);
+        }
+
+        setHUD();
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    renderer.setAnimationLoop(animate);
+  </script>
+</body>
+</html>
