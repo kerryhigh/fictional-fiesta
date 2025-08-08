@@ -14,7 +14,7 @@
   </style>
 </head>
 <body>
-  <div id="info">Mini City • Left stick: move/strafe • Right stick: turn • Desktop: WASD + QE • NARF!</div>
+  <div id="info">Mini City • Left stick: move/strafe • Right stick: turn & up/down • Desktop: WASD+QE, Space/C = up/down • NARF!</div>
   <script type="module">
   import * as THREE from 'https://unpkg.com/three@0.159.0/build/three.module.js';
   import { VRButton } from 'https://unpkg.com/three@0.159.0/examples/jsm/webxr/VRButton.js';
@@ -30,6 +30,7 @@
   renderer.setSize(innerWidth, innerHeight);
   renderer.setPixelRatio(devicePixelRatio);
   renderer.xr.enabled = true;
+  renderer.xr.setReferenceSpaceType('local-floor'); // Quest: floor-relative space so locomotion works
   document.body.appendChild(renderer.domElement);
   document.body.appendChild(VRButton.createButton(renderer));
 
@@ -38,6 +39,12 @@
   dolly.position.set(0, 0, 0);
   scene.add(dolly);
   dolly.add(camera);
+
+  // Add XR controllers into the dolly so thumbstick axes are available on Quest
+  const controller0 = renderer.xr.getController(0);
+  const controller1 = renderer.xr.getController(1);
+  dolly.add(controller0);
+  dolly.add(controller1);
 
   // Lights
   const hemi = new THREE.HemisphereLight(0xffffff, 0x334455, 0.9);
@@ -329,19 +336,25 @@
 
   function getXRSticks() {
     const session = renderer.xr.getSession();
-    let left = { x:0, y:0 }, right = { x:0, y:0 };
-    if (!session) return { left, right };
+    const out = { left: { x: 0, y: 0 }, right: { x: 0, y: 0 }, buttons: { left: {}, right: {} } };
+    if (!session) return out;
     for (const src of session.inputSources) {
       const gp = src.gamepad;
-      if (!gp || gp.axes.length < 2) continue;
-      // Many controllers: first 2 axes = primary stick; sometimes 4 axes (stick1 + stick2)
+      if (!gp) continue;
+      const axes = gp.axes || [];
+      // On Quest, axes length can be 4. Use the last two if so; else use the first two.
+      const ax = axes.length >= 4 ? axes.slice(-2) : axes.slice(0, 2);
+      const stick = { x: ax[0] || 0, y: ax[1] || 0 };
+      const buttons = {};
+      if (gp.buttons) gp.buttons.forEach((b, i) => (buttons[i] = !!b?.pressed));
       if (src.handedness === 'left') {
-        left.x = gp.axes[0] || 0;
-        left.y = gp.axes[1] || 0;
+        out.left = stick; out.buttons.left = buttons;
       } else if (src.handedness === 'right') {
-        right.x = gp.axes[0] || 0;
-        right.y = gp.axes[1] || 0;
+        out.right = stick; out.buttons.right = buttons;
       }
+    }
+    return out;
+  }
     }
     return { left, right };
   }
@@ -351,21 +364,31 @@
     const { left, right } = getXRSticks();
     const stickDead = (v) => Math.abs(v) < 0.12 ? 0 : v;
     const lx = stickDead(left.x), ly = stickDead(left.y);
-    const rx = stickDead(right.x);
+    const rx = stickDead(right.x), ry = stickDead(right.y);
+
+    // Speeds
+    const speed = 10; // m/s-ish (we zoom)
+    const turnSpeed = 1.8; // rad/s
+    const flySpeed = 10; // vertical m/s
+
+    // Inputs
+    let movX = lx, movY = ly, turn = rx;
+    let climb = -ry; // push stick up to go up
 
     // Desktop fallback
-    const speed = 10; // m/s-ish (yeah we’re zoomin’, baby)
-    const turnSpeed = 1.8;
-    let movX = lx, movY = ly, turn = rx;
     if (keys.has('KeyW')) movY = -1;
     if (keys.has('KeyS')) movY = 1;
     if (keys.has('KeyA')) movX = -1;
     if (keys.has('KeyD')) movX = 1;
     if (keys.has('KeyQ')) yaw += turnSpeed*dt;
     if (keys.has('KeyE')) yaw -= turnSpeed*dt;
+    if (keys.has('Space')) climb += 1;
+    if (keys.has('KeyC') || keys.has('ShiftLeft')) climb -= 1;
+
+    // Turning
     yaw -= turn * turnSpeed * dt; // right stick X to turn
 
-    // Move relative to camera facing
+    // Move relative to camera facing (horizontal plane)
     const dir = new THREE.Vector3();
     camera.getWorldDirection(dir);
     dir.y = 0; dir.normalize();
@@ -374,6 +397,10 @@
     const forward = dir.clone().multiplyScalar(-movY * speed * dt);
     const strafe  = rightVec.clone().multiplyScalar(movX * speed * dt);
     dolly.position.add(forward).add(strafe);
+
+    // Vertical (fly)
+    dolly.position.y += climb * flySpeed * dt;
+    if (dolly.position.y < 0) dolly.position.y = 0; // don't go underground
 
     // Apply yaw around the player
     dolly.rotation.y = yaw;
