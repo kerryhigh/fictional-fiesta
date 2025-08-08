@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>WebXR Gorilla Push — Color Trip (XR session-safe)</title>
+  <title>WebXR Gorilla Push — Color Trip (VRButton restored)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     html, body { margin:0; height:100%; overflow:hidden; background:#000; }
@@ -10,25 +10,15 @@
       position: absolute; left: 12px; top: 12px; color: #e6f7ff; font-family: system-ui, sans-serif;
       padding: 8px 10px; background: rgba(0,0,0,.35); border-radius: 12px; font-size: 14px; user-select:none; z-index:5;
     }
+    #tests {
+      position: absolute; right: 12px; top: 12px; color: #afffb9; background: rgba(0,0,0,.35);
+      padding: 8px 10px; border-radius: 12px; font: 12px/1.2 system-ui, sans-serif; z-index:5;
+    }
     #overlay { position: fixed; inset: 0; pointer-events: none; z-index: 9999; display:none; }
     #overlay pre {
       position: absolute; left: 10px; bottom: 10px; right: 10px; max-height: 60%;
       overflow:auto; color:#ffb4b4; background: rgba(30,0,0,.85); padding:12px; border-radius:12px;
       font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap;
-    }
-    #tests {
-      position: absolute; right: 12px; top: 12px; color: #afffb9; background: rgba(0,0,0,.35);
-      padding: 8px 10px; border-radius: 12px; font: 12px/1.2 system-ui, sans-serif; z-index:5;
-    }
-    #xrbtn {
-      position: absolute; left: 12px; bottom: 12px; z-index: 6;
-      padding: 10px 14px; border-radius: 12px; border: 0;
-      background: #1b5e20; color: #eaffec; font: 600 14px system-ui; cursor: pointer;
-    }
-    #toast {
-      position: absolute; left: 50%; transform: translateX(-50%);
-      bottom: 12px; z-index: 7; padding: 8px 12px; border-radius: 10px;
-      font: 12px system-ui; background: rgba(0,0,0,.6); color: #fff; display:none;
     }
   </style>
 </head>
@@ -38,22 +28,18 @@
     Trigger/Grip to plant • Push along surfaces to move • Reach the rainbow 🌈
   </div>
   <div id="tests">Self-tests: (running…)</div>
-  <button id="xrbtn" hidden>Enter VR</button>
-  <div id="toast"></div>
   <div id="overlay"><pre id="err"></pre></div>
 
   <script type="module">
-    // ===== Error overlay (filter harmless XR busy error) =====
+    // ===== Error overlay (but chill out about XR "already active" noise) =====
     const overlay = document.getElementById('overlay');
     const errBox  = document.getElementById('err');
     function showErr(e){
-      const msg = (e && e.message) ? e.message : String(e);
+      const msg  = (e && e.message) ? e.message : String(e);
       const name = (e && e.name) ? e.name : '';
-      // Ignore the noisy “already an active, immersive XRSession” error – UX handles it with a toast
       if (name === 'InvalidStateError' && /already an active, immersive XRSession/i.test(msg)) {
-        toast("Another immersive session is active. Use the browser's Resume/Close, then try again.");
-        console.warn(e);
-        return;
+        console.warn('XR busy elsewhere — not a crash:', e);
+        return; // don't terrify the user; VRButton UI handles it
       }
       overlay.style.display = 'block';
       errBox.textContent += (e && e.stack) ? (e.stack + '\n') : (msg + '\n');
@@ -62,19 +48,10 @@
     window.addEventListener('error', ev => showErr(ev.error || ev.message));
     window.addEventListener('unhandledrejection', ev => showErr(ev.reason || ev));
 
-    // ===== Imports at top-level (no sandboxing shenanigans) =====
-    import * as THREE  from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+    // ===== Imports at top-level =====
+    import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+    import { VRButton } from 'https://unpkg.com/three@0.160.0/examples/jsm/webxr/VRButton.js';
     import * as CANNON from 'https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js';
-
-    // ===== Tiny toast =====
-    const toastEl = document.getElementById('toast');
-    let toastTimer = null;
-    function toast(t) {
-      toastEl.textContent = t;
-      toastEl.style.display = 'block';
-      clearTimeout(toastTimer);
-      toastTimer = setTimeout(()=> toastEl.style.display = 'none', 3000);
-    }
 
     // ===== Boot =====
     boot().catch(showErr);
@@ -91,13 +68,16 @@
       renderer.debug.checkShaderErrors = true;
       document.body.appendChild(renderer.domElement);
 
+      // Use the original VRButton again (welcome back, buddy)
+      const vrBtn = VRButton.createButton(renderer);
+      document.body.appendChild(vrBtn);
+
       const scene = new THREE.Scene();
       scene.fog = new THREE.Fog(0xbfe7ff, 20, 80);
       const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.01, 500);
       const dolly = new THREE.Group(); scene.add(dolly); dolly.add(camera);
-      scene.add(makeGradientSky(0x85e4ff, 0xfae3ff));
 
-      // Lights
+      scene.add(makeGradientSky(0x85e4ff, 0xfae3ff));
       scene.add(new THREE.HemisphereLight(0xfdf7ff, 0x334455, 0.95));
       const sun = new THREE.DirectionalLight(0xffffff, 0.8); sun.position.set(8,12,6); scene.add(sun);
 
@@ -108,7 +88,7 @@
       const matDefault = new CANNON.Material('default');
       world.addContactMaterial(new CANNON.ContactMaterial(matDefault, matDefault, { friction:0.3, restitution:0.0 }));
 
-      // Player body
+      // Player
       const playerBody = new CANNON.Body({
         mass: 75, shape: new CANNON.Sphere(0.25),
         position: new CANNON.Vec3(0, 1.4, 0), linearDamping: 0.22, material: matDefault
@@ -175,23 +155,19 @@
         p.userData.phase = Math.random()*Math.PI*2; scene.add(p); pickups.push(p);
       }
 
-      // Controllers
+      // Controllers + vignette + raycaster
       const controller0 = renderer.xr.getController(0);
       const controller1 = renderer.xr.getController(1);
       dolly.add(controller0); dolly.add(controller1);
       const hands = [ makeHandState(controller0, 0x66ffc2), makeHandState(controller1, 0xffaaff) ];
-
-      // Vignette
       const vignette = makeVignette(); camera.add(vignette);
-
-      // Raycaster
       const raycaster = new THREE.Raycaster();
 
-      // Push params
+      // Hand push params
       const PUSH_GAIN = 1.5, MAX_SPEED = 8.0, SURFACE_MAX_DIST = 0.08, NORMAL_DOT_MIN = 0.35, UPWARD_ASSIST = 0.6, BIG_PUSH_COOLDOWN = 0.028;
       let lastBigPushT = 0;
 
-      // Reset
+      // Reset + loop
       const clock = new THREE.Clock();
       function resetRun(){
         playerBody.velocity.set(0,0,0);
@@ -201,134 +177,46 @@
       }
       resetRun();
 
-      // ===== XR Button (custom, session-safe) =====
-      const xrBtn = document.getElementById('xrbtn');
-      xrBtn.hidden = true;
-      let xrSupported = false;
-
-      if (navigator.xr) {
-        try {
-          xrSupported = await navigator.xr.isSessionSupported('immersive-vr');
-        } catch (e) { /* older runtimes */ }
-      }
-      if (xrSupported) {
-        xrBtn.hidden = false;
-        updateXRButton();
-        xrBtn.addEventListener('click', async () => {
-          try {
-            const active = renderer.xr.getSession();
-            if (active) {
-              await active.end();
-              return;
-            }
-            // optional features: floor & hand tracking if present
-            const session = await navigator.xr.requestSession('immersive-vr', {
-              optionalFeatures: ['local-floor','bounded-floor','hand-tracking','layers']
-            });
-            renderer.xr.setSession(session);
-            session.addEventListener('end', updateXRButton);
-            updateXRButton();
-          } catch (e) {
-            // This is where InvalidStateError comes in when another immersive session is active
-            if (e && e.name === 'InvalidStateError') {
-              toast("XR busy: tap the browser's Resume/Close for the other session, then try again.");
-              console.warn(e);
-            } else {
-              showErr(e);
-            }
-          }
-        });
-        renderer.xr.addEventListener('sessionstart', updateXRButton);
-        renderer.xr.addEventListener('sessionend', updateXRButton);
-        document.addEventListener('visibilitychange', () => {
-          // If we return to a page with an already-active session, reflect it
-          updateXRButton();
-        });
-      }
-
-      function updateXRButton() {
-        const active = renderer.xr.getSession();
-        xrBtn.textContent = active ? 'Exit VR' : 'Enter VR';
-        xrBtn.style.background = active ? '#7b1fa2' : '#1b5e20';
-      }
-
-      // ===== Self-tests (kept + added XR checks) =====
-      const tests = [];
-      function ok(name, pass, detail=''){ tests.push({name, pass, detail}); }
-      try { ok('THREE loaded', !!THREE.WebGLRenderer); } catch {}
-      try { ok('CANNON loaded', !!CANNON.World); } catch {}
-      try {
-        const w = new CANNON.World();
-        const b = new CANNON.Body({ mass:1, shape:new CANNON.Sphere(0.1) });
-        w.addBody(b); b.applyImpulse(new CANNON.Vec3(1,0,0), b.position); w.step(1/60);
-        ok('Cannon step+impulse', b.velocity.x > 0);
-      } catch (e) { ok('Cannon step+impulse', false, String(e)); }
-      try {
-        const g = new THREE.BoxGeometry(1,1,1), m = new THREE.MeshBasicMaterial({visible:false});
-        const box = new THREE.Mesh(g,m); scene.add(box); box.position.set(0,0,-2);
-        const cam = new THREE.PerspectiveCamera(70,1,0.01,100); cam.position.set(0,0,0);
-        const rc = new THREE.Raycaster(); rc.set(cam.position, new THREE.Vector3(0,0,-1));
-        const hit = rc.intersectObject(box, true);
-        ok('Raycaster hits box', hit.length > 0); scene.remove(box);
-      } catch (e) { ok('Raycaster hits box', false, String(e)); }
-      // XR capability tests (non-fatal if unsupported)
-      ok('navigator.xr present', !!navigator.xr);
-      if (navigator.xr && navigator.xr.isSessionSupported) {
-        navigator.xr.isSessionSupported('immersive-vr')
-          .then(supported => { ok('isSessionSupported(immersive-vr)', supported || false); renderTestSummary(); })
-          .catch(() => { ok('isSessionSupported(immersive-vr)', false, 'threw'); renderTestSummary(); });
-      } else {
-        renderTestSummary();
-      }
-      function renderTestSummary(){
-        const out = tests.map(t => (t.pass?'✅':'❌') + ' ' + t.name + (t.detail?` — ${t.detail}`:'')).join('<br>');
-        testBox.innerHTML = 'Self-tests:<br>' + out;
-      }
-
-      // ===== Resize =====
       addEventListener('resize', ()=>{
         camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
         renderer.setSize(innerWidth, innerHeight);
       });
 
-      // ===== Main loop =====
-      const worldUp = new THREE.Vector3(0,1,0);
+      // Kill our own session when backgrounded so we don’t cause the “already active” mess
+      const endIfActive = async ()=> {
+        const s = renderer.xr.getSession?.();
+        if (s) try { await s.end(); } catch(e){ console.warn('Session end on hide failed (ignored):', e); }
+      };
+      window.addEventListener('pagehide', endIfActive);
+      document.addEventListener('visibilitychange', ()=>{ if (document.hidden) endIfActive(); });
+
       renderer.setAnimationLoop(()=>{
         const dt = Math.min(clock.getDelta(), 0.033);
         const t  = performance.now()/1000;
 
-        // Physics (substeps)
+        // Physics
         const fixed = 1/90; let acc = dt;
         while (acc > 0) { world.step(fixed, Math.min(acc, fixed), 2); acc -= fixed; }
 
-        // Follow body
+        // Follow
         dolly.position.set(playerBody.position.x, playerBody.position.y + headOffsetY, playerBody.position.z);
 
-        // Updatables
+        // Ticks
         updatables.forEach(u=>u(dt,t));
         goal.update(dt, t);
-
-        // Pickups
-        scene.traverse(obj=>{
-          if (obj.userData.phase !== undefined) {
-            obj.rotation.y += dt*1.8;
-            if (obj.material && obj.material.emissiveIntensity !== undefined) {
-              obj.material.emissiveIntensity = 0.8 + Math.sin(t*2.5 + obj.userData.phase)*0.6;
-            }
-          }
+        pickups.forEach(p=>{
+          p.rotation.y += dt*1.8;
+          p.material.emissiveIntensity = 0.8 + Math.sin(t*2.5 + p.userData.phase)*0.6;
         });
+        signMeshes.forEach(m=> m.lookAt(dolly.position.x, m.position.y, dolly.position.z));
 
-        // Billboard signs
-        // (sign meshes are planes; just face camera horizontally)
-        // Note: using scene traversal would be overkill; left as-is from prior build.
-
-        // Vignette
+        // Comfort
         const speed = playerBody.velocity.length();
         vignette.material.uniforms.uIntensity.value = THREE.MathUtils.clamp((speed - 1.5) / (MAX_SPEED - 1.5), 0, 0.6);
 
-        // Hand pushes
+        // Push
         const now = t;
-        for (const h of [controller0, controller1].map((c,i)=>hands[i])){
+        for (const h of hands){
           h.ctrl.updateMatrixWorld();
           const pos = new THREE.Vector3().setFromMatrixPosition(h.ctrl.matrixWorld);
           h.velocity.copy(pos).sub(h.lastPos).divideScalar(dt);
@@ -340,7 +228,7 @@
           if (!contact) continue;
 
           const n = contact.normal;
-          if (n.dot(worldUp) < -0.98) continue;
+          if (n.dot(new THREE.Vector3(0,1,0)) < -0.98) continue;
 
           const vn = n.clone().multiplyScalar(h.velocity.dot(n));
           const tangential = h.velocity.clone().sub(vn);
@@ -359,11 +247,8 @@
           if (len > MAX_SPEED) v.scale(MAX_SPEED / (len + 1e-6), v);
         }
 
-        // Goal check
+        // Goal / pickups
         if (dolly.position.distanceTo(goal.group.position) < 1.2) { goal.burst(); setTimeout(()=> resetRun(), 200); }
-
-        // Pickup check (cheap distance check; fine for a handful)
-        // You can switch to a grid or BVH if you go wild.
         for (const p of pickups){
           if (!p.visible) continue;
           if (dolly.position.distanceTo(p.position) < 0.8){ p.visible = false; applyImpulse(playerBody, new CANNON.Vec3(0, 0.8, 0)); }
@@ -372,7 +257,35 @@
         renderer.render(scene, camera);
       });
 
-      // ===== Helpers =====
+      // ===== Self-tests (same names, more robust raycast) =====
+      const tests = [];
+      const ok = (name, pass, detail='') => tests.push({name, pass, detail});
+
+      ok('THREE loaded', !!THREE.WebGLRenderer);
+      ok('CANNON loaded', !!CANNON.World);
+      try {
+        const w = new CANNON.World();
+        const b = new CANNON.Body({ mass:1, shape:new CANNON.Sphere(0.1) });
+        w.addBody(b); b.applyImpulse(new CANNON.Vec3(1,0,0), b.position); w.step(1/60);
+        ok('Cannon step+impulse', b.velocity.x > 0);
+      } catch (e) { ok('Cannon step+impulse', false, String(e)); }
+
+      try {
+        const g = new THREE.BoxGeometry(1,1,1);
+        const m = new THREE.MeshBasicMaterial({ wireframe:false, visible:false });
+        const box = new THREE.Mesh(g,m); box.position.set(0,0,-2);
+        scene.add(box); box.updateMatrixWorld(true);
+        const rc = new THREE.Raycaster();
+        rc.set(new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-1)); rc.near = 0.01; rc.far = 10;
+        const hits = rc.intersectObject(box, false);
+        ok('Raycaster hits box', hits.length > 0, `hits=${hits.length}`);
+        scene.remove(box); g.dispose(); m.dispose();
+      } catch (e) { ok('Raycaster hits box', false, String(e)); }
+
+      // Render test summary
+      testBox.innerHTML = 'Self-tests:<br>' + tests.map(t => (t.pass?'✅':'❌') + ' ' + t.name + (t.detail?` — ${t.detail}`:'')).join('<br>');
+
+      // ===== helpers =====
       function addBox(w,h,d, x,y,z, color=0xcccccc, pushable=false){
         const geo = new THREE.BoxGeometry(w,h,d);
         const mat = new THREE.MeshStandardMaterial({ color, roughness:0.85, metalness:0.0 });
@@ -383,11 +296,7 @@
         if (pushable) pushSurfaces.push(mesh);
         return mesh;
       }
-
-      function makePickup(){
-        return new THREE.Mesh(new THREE.IcosahedronGeometry(0.12,0), new THREE.MeshStandardMaterial({ color:0xffffff, emissive:0x55ffff, emissiveIntensity:1.2, roughness:0.4, metalness:0.2 }));
-      }
-
+      function makePickup(){ return new THREE.Mesh(new THREE.IcosahedronGeometry(0.12,0), new THREE.MeshStandardMaterial({ color:0xffffff, emissive:0x55ffff, emissiveIntensity:1.2, roughness:0.4, metalness:0.2 })); }
       function makeGoalRing(pos){
         const group = new THREE.Group(); group.position.copy(pos);
         const tor = new THREE.TorusGeometry(0.8, 0.12, 16, 64);
@@ -412,7 +321,6 @@
           burst(){ sparks.forEach(s=> s.material.emissiveIntensity = 2.5); setTimeout(()=> sparks.forEach(s=> s.material.emissiveIntensity = 1.0), 200); }
         };
       }
-
       function plantTrees(positions){
         const trunkGeo = new THREE.CylinderGeometry(0.08, 0.1, 0.8, 8);
         const trunkMat = new THREE.MeshStandardMaterial({ color: 0x7a4a2a, roughness:0.9, metalness:0.0 });
@@ -428,7 +336,6 @@
         });
         scene.add(trunkInst); scene.add(leafInst);
       }
-
       function addSign(pos, text){
         const tex = makeSignTexture(text);
         const geo = new THREE.PlaneGeometry(0.9, 0.6);
@@ -436,9 +343,7 @@
         const m = new THREE.Mesh(geo, mat); m.position.copy(pos); m.position.y += 0.2; scene.add(m);
         const post = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.4, 6), new THREE.MeshStandardMaterial({ color: 0x6b6b6b, roughness:0.9 }));
         post.position.set(pos.x, pos.y - 0.1, pos.z); scene.add(post);
-        signMeshes.push(m);
       }
-
       function makeSignTexture(text){
         const c = document.createElement('canvas'); c.width = 512; c.height = 384;
         const ctx = c.getContext('2d');
@@ -451,7 +356,6 @@
         ctx.fillStyle = '#000'; ctx.font = '700 22px system-ui'; ctx.fillText('WEIRD ZONE', c.width-150, 50);
         const tex = new THREE.CanvasTexture(c); tex.anisotropy = 4; tex.needsUpdate = true; return tex;
       }
-
       function wrapText(ctx, text, x, y, maxWidth, lineHeight){
         const words = text.split(' '); let line = '';
         for (let n = 0; n < words.length; n++) {
@@ -461,7 +365,6 @@
         }
         ctx.fillText(line, x, y);
       }
-
       function makeVignette(){
         const g = new THREE.PlaneGeometry(2,2);
         const m = new THREE.ShaderMaterial({
@@ -473,7 +376,6 @@
         });
         const mesh = new THREE.Mesh(g, m); mesh.renderOrder = 999; return mesh;
       }
-
       function probeContact(raycaster, origin, forward, pushSurfaces, SURFACE_MAX_DIST, NORMAL_DOT_MIN){
         const dirs = [
           forward.clone(),
@@ -495,12 +397,10 @@
         }
         return null;
       }
-
       function applyImpulse(body, v){
         const imp = (v.isCANNON) ? v : new CANNON.Vec3(v.x, v.y, v.z);
         body.applyImpulse(imp, body.position);
       }
-
       function makeHandState(ctrl, color){
         const s = {
           ctrl, isPlanting:false,
@@ -514,7 +414,6 @@
         ctrl.addEventListener('squeezeend',  ()=>{ s.isPlanting = false; s.sphere.visible = false; });
         return s;
       }
-
       function makeGradientSky(top=0x87ceeb, bottom=0xffffff){
         const geo = new THREE.SphereGeometry(200, 32, 16);
         const mat = new THREE.ShaderMaterial({
