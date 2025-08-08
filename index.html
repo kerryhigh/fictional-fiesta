@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>WebXR Gorilla Push — Color Trip (Locomotion Fixed)</title>
+  <title>WebXR Gorilla Push — Color Trip (lockup fix + locomotion)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     html, body { margin:0; height:100%; overflow:hidden; background:#000; }
@@ -24,20 +24,23 @@
 </head>
 <body>
   <div id="info">
-    <b>Gorilla Push — Color Trip locomotion fixed</b><br/>
-    Trigger/Grip to plant • Push along surfaces (including ground) to move/jump • Reach the rainbow 🌈
+    <b>Gorilla Push — Color Trip</b><br/>
+    Trigger/Grip to plant • Push along surfaces (incl. the ground) to move/jump • Reach the rainbow 🌈
   </div>
   <div id="tests">Self-tests: (running…)</div>
   <div id="overlay"><pre id="err"></pre></div>
 
   <script type="module">
-    // ===== Error overlay (ignore XR “already active” noise) =====
+    // ===== Error overlay (quiet about XR "already active" noise) =====
     const overlay = document.getElementById('overlay');
     const errBox  = document.getElementById('err');
     function showErr(e){
       const msg  = (e && e.message) ? e.message : String(e);
       const name = (e && e.name) ? e.name : '';
-      if (name === 'InvalidStateError' && /already an active, immersive XRSession/i.test(msg)) { console.warn('XR busy elsewhere:', e); return; }
+      if (name === 'InvalidStateError' && /already an active, immersive XRSession/i.test(msg)) {
+        console.warn('XR busy elsewhere — not a crash:', e);
+        return;
+      }
       overlay.style.display = 'block';
       errBox.textContent += (e && e.stack) ? (e.stack + '\n') : (msg + '\n');
       console.error(e);
@@ -62,11 +65,8 @@
       renderer.setSize(innerWidth, innerHeight);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.xr.enabled = true;
-
-      // CRUCIAL: use 'local', not 'local-floor', so our headOffset math makes sense in XR.
+      // Use 'local' so our own head offset controls height
       renderer.xr.setReferenceSpaceType('local');
-
-      renderer.debug.checkShaderErrors = true;
       document.body.appendChild(renderer.domElement);
       document.body.appendChild(VRButton.createButton(renderer));
 
@@ -86,21 +86,20 @@
       const matDefault = new CANNON.Material('default');
       world.addContactMaterial(new CANNON.ContactMaterial(matDefault, matDefault, { friction:0.5, restitution:0.0 }));
 
-      // Player body (sphere center ~chest). Head will be ~1.32m above it.
+      // Player body
       const playerBody = new CANNON.Body({
         mass: 75, shape: new CANNON.Sphere(0.25),
-        position: new CANNON.Vec3(0, 1.4, 0),
-        linearDamping: 0.22, material: matDefault
+        position: new CANNON.Vec3(0, 1.4, 0), linearDamping: 0.22, material: matDefault
       });
       world.addBody(playerBody);
-      const headOffsetY = 1.32; // ~eye height above body center
+      const headOffsetY = 1.32; // eye height above body center
 
       // Level
       const pushSurfaces = [];
       const updatables = [];
       const pastel = [0xffc1cc,0xffe4a3,0xb9f6a5,0xa6e3ff,0xd0b3ff,0xffc6a5,0xaef1ff,0xfde2ff];
 
-      // FLOOR: now pushable=true so you can jump off the ground.
+      // Floor is pushable so you can jump
       addBox(60,1,60, 0,-0.5,0, 0x143945, true);
 
       [
@@ -125,7 +124,6 @@
 
       const goal = makeGoalRing(new THREE.Vector3(13.8, 7.4, 9.5)); scene.add(goal.group);
 
-      // Trees + trunks pushable via invisible colliders
       plantTrees([
         new THREE.Vector3(-6,0,-3), new THREE.Vector3(5,0,-6), new THREE.Vector3(10,0,2),
         new THREE.Vector3(8,0,8), new THREE.Vector3(2,0,5), new THREE.Vector3(-3,0,6), new THREE.Vector3(12,0,12),
@@ -166,12 +164,12 @@
       const raycaster = new THREE.Raycaster();
       const worldUp = new THREE.Vector3(0,1,0);
 
-      // Tuned locomotion
-      const PUSH_GAIN = 1.8;            // a bit spicier
+      // Push/jump tuning
+      const PUSH_GAIN = 1.8;
       const MAX_SPEED = 8.5;
-      const SURFACE_MAX_DIST = 0.10;    // a touch more forgiving
+      const SURFACE_MAX_DIST = 0.10;
       const NORMAL_DOT_MIN = 0.30;
-      const UPWARD_ASSIST = 0.9;        // helps you pop off the ground
+      const UPWARD_ASSIST = 0.9;
       const BIG_PUSH_COOLDOWN = 0.028;
       let lastBigPushT = 0;
 
@@ -190,7 +188,7 @@
         renderer.setSize(innerWidth, innerHeight);
       });
 
-      // End our session if hidden to avoid zombie sessions
+      // End our session if hidden to avoid zombies
       const endIfActive = async ()=> {
         const s = renderer.xr.getSession?.();
         if (s) try { await s.end(); } catch(e){ console.warn('Session end on hide failed (ignored):', e); }
@@ -206,13 +204,13 @@
         const fixed = 1/90; let acc = dt;
         while (acc > 0) { world.step(fixed, Math.min(acc, fixed), 2); acc -= fixed; }
 
-        // Follow physics body (POV ~1.32m above body center)
+        // POV follows physics body (head offset up)
         dolly.position.set(playerBody.position.x, playerBody.position.y + headOffsetY, playerBody.position.z);
 
-        // Ticks
+        // Movers / goal / pickups bling
         updatables.forEach(u=>u(dt,t));
         goal.update(dt, t);
-        picku ps.forEach(p=>{
+        pickups.forEach(p=>{
           p.rotation.y += dt*1.8;
           p.material.emissiveIntensity = 0.8 + Math.sin(t*2.5 + p.userData.phase)*0.6;
         });
@@ -248,7 +246,6 @@
           if (now - lastBigPushT > BIG_PUSH_COOLDOWN) {
             applyImpulse(playerBody, impulseDir.multiplyScalar(mag));
             lastBigPushT = now;
-            // extra lift when pushing a floor-ish surface
             if (n.y > 0.6) applyImpulse(playerBody, new CANNON.Vec3(0, UPWARD_ASSIST, 0));
           }
 
@@ -267,7 +264,7 @@
         renderer.render(scene, camera);
       });
 
-      // ===== Self-tests (added gravity sanity) =====
+      // ===== Self-tests (unchanged names; added gravity test) =====
       const tests = [];
       const ok = (name, pass, detail='') => tests.push({name, pass, detail});
       ok('THREE loaded', !!THREE.WebGLRenderer);
@@ -276,23 +273,18 @@
         const w = new CANNON.World(); w.gravity.set(0,-9.81,0);
         const ground = new CANNON.Body({ mass:0, shape:new CANNON.Box(new CANNON.Vec3(1,0.5,1)), position:new CANNON.Vec3(0,-0.5,0) });
         const b = new CANNON.Body({ mass:1, shape:new CANNON.Sphere(0.1), position:new CANNON.Vec3(0,1,0) });
-        w.addBody(ground); w.addBody(b); w.step(1/60); w.step(1/60); // should drop
+        w.addBody(ground); w.addBody(b); w.step(1/60); w.step(1/60);
         ok('Gravity pulls down', b.position.y < 1);
       } catch (e) { ok('Gravity pulls down', false, String(e)); }
-
-      // Raycaster test (robust)
       try {
-        const g = new THREE.BoxGeometry(1,1,1);
-        const m = new THREE.MeshBasicMaterial({visible:false});
+        const g = new THREE.BoxGeometry(1,1,1), m = new THREE.MeshBasicMaterial({visible:false});
         const box = new THREE.Mesh(g,m); box.position.set(0,0,-2);
         scene.add(box); box.updateMatrixWorld(true);
-        const rc = new THREE.Raycaster();
-        rc.set(new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-1)); rc.near = 0.01; rc.far = 10;
+        const rc = new THREE.Raycaster(); rc.set(new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-1)); rc.near = 0.01; rc.far = 10;
         const hits = rc.intersectObject(box, false);
         ok('Raycaster hits box', hits.length > 0, `hits=${hits.length}`);
         scene.remove(box); g.dispose(); m.dispose();
       } catch (e) { ok('Raycaster hits box', false, String(e)); }
-
       document.getElementById('tests').innerHTML =
         'Self-tests:<br>' + tests.map(t => (t.pass?'✅':'❌') + ' ' + t.name + (t.detail?` — ${t.detail}`:'')).join('<br>');
 
@@ -388,13 +380,13 @@
         const mesh = new THREE.Mesh(g, m); mesh.renderOrder = 999; return mesh;
       }
 
-      // BIG CHANGE: include a pure downward ray so floor pushes register
+      // Include a straight-down ray so ground pushes register cleanly
       function probeContact(raycaster, origin, forward, pushSurfaces, SURFACE_MAX_DIST, NORMAL_DOT_MIN){
         const dirs = [
           forward.clone(),
           forward.clone().add(new THREE.Vector3(0,0.25,0)).normalize(),
           forward.clone().add(new THREE.Vector3(0,-0.25,0)).normalize(),
-          new THREE.Vector3(0,-1,0),               // <-- straight down
+          new THREE.Vector3(0,-1,0),
           forward.clone().multiplyScalar(-1)
         ];
         for (const d of dirs){
