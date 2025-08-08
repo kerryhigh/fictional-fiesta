@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>WebXR Gorilla Push — Color Trip (Fixed Imports + Self-Tests)</title>
+  <title>WebXR Gorilla Push — Color Trip (XR session-safe)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     html, body { margin:0; height:100%; overflow:hidden; background:#000; }
@@ -20,6 +20,16 @@
       position: absolute; right: 12px; top: 12px; color: #afffb9; background: rgba(0,0,0,.35);
       padding: 8px 10px; border-radius: 12px; font: 12px/1.2 system-ui, sans-serif; z-index:5;
     }
+    #xrbtn {
+      position: absolute; left: 12px; bottom: 12px; z-index: 6;
+      padding: 10px 14px; border-radius: 12px; border: 0;
+      background: #1b5e20; color: #eaffec; font: 600 14px system-ui; cursor: pointer;
+    }
+    #toast {
+      position: absolute; left: 50%; transform: translateX(-50%);
+      bottom: 12px; z-index: 7; padding: 8px 12px; border-radius: 10px;
+      font: 12px system-ui; background: rgba(0,0,0,.6); color: #fff; display:none;
+    }
   </style>
 </head>
 <body>
@@ -28,32 +38,51 @@
     Trigger/Grip to plant • Push along surfaces to move • Reach the rainbow 🌈
   </div>
   <div id="tests">Self-tests: (running…)</div>
+  <button id="xrbtn" hidden>Enter VR</button>
+  <div id="toast"></div>
   <div id="overlay"><pre id="err"></pre></div>
 
   <script type="module">
-    // ===== Error overlay up front so any crash gets shown =====
-    const errBox = document.getElementById('err');
+    // ===== Error overlay (filter harmless XR busy error) =====
     const overlay = document.getElementById('overlay');
+    const errBox  = document.getElementById('err');
     function showErr(e){
+      const msg = (e && e.message) ? e.message : String(e);
+      const name = (e && e.name) ? e.name : '';
+      // Ignore the noisy “already an active, immersive XRSession” error – UX handles it with a toast
+      if (name === 'InvalidStateError' && /already an active, immersive XRSession/i.test(msg)) {
+        toast("Another immersive session is active. Use the browser's Resume/Close, then try again.");
+        console.warn(e);
+        return;
+      }
       overlay.style.display = 'block';
-      errBox.textContent += (e && e.stack) ? (e.stack + '\n') : (String(e) + '\n');
+      errBox.textContent += (e && e.stack) ? (e.stack + '\n') : (msg + '\n');
       console.error(e);
     }
     window.addEventListener('error', ev => showErr(ev.error || ev.message));
     window.addEventListener('unhandledrejection', ev => showErr(ev.reason || ev));
 
-    // ===== Top-level imports (the fix) =====
-    import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
-    import { VRButton } from 'https://unpkg.com/three@0.160.0/examples/jsm/webxr/VRButton.js';
+    // ===== Imports at top-level (no sandboxing shenanigans) =====
+    import * as THREE  from 'https://unpkg.com/three@0.160.0/build/three.module.js';
     import * as CANNON from 'https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js';
 
-    // ===== Boot; any runtime errors still hit overlay =====
+    // ===== Tiny toast =====
+    const toastEl = document.getElementById('toast');
+    let toastTimer = null;
+    function toast(t) {
+      toastEl.textContent = t;
+      toastEl.style.display = 'block';
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(()=> toastEl.style.display = 'none', 3000);
+    }
+
+    // ===== Boot =====
     boot().catch(showErr);
 
     async function boot(){
       const testBox = document.getElementById('tests');
 
-      // ===== Renderer / Scene / Camera =====
+      // Renderer / Scene / Camera
       const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
       renderer.setPixelRatio(devicePixelRatio);
       renderer.setSize(innerWidth, innerHeight);
@@ -61,21 +90,18 @@
       renderer.xr.enabled = true;
       renderer.debug.checkShaderErrors = true;
       document.body.appendChild(renderer.domElement);
-      document.body.appendChild(VRButton.createButton(renderer));
 
       const scene = new THREE.Scene();
       scene.fog = new THREE.Fog(0xbfe7ff, 20, 80);
       const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.01, 500);
       const dolly = new THREE.Group(); scene.add(dolly); dolly.add(camera);
-
-      // Sky
       scene.add(makeGradientSky(0x85e4ff, 0xfae3ff));
 
       // Lights
       scene.add(new THREE.HemisphereLight(0xfdf7ff, 0x334455, 0.95));
       const sun = new THREE.DirectionalLight(0xffffff, 0.8); sun.position.set(8,12,6); scene.add(sun);
 
-      // ===== Physics =====
+      // Physics
       const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.81, 0) });
       world.broadphase = new CANNON.SAPBroadphase(world);
       world.allowSleep = true;
@@ -90,15 +116,12 @@
       world.addBody(playerBody);
       const headOffsetY = 1.32;
 
-      // ===== Level =====
+      // Level
       const pushSurfaces = [];
       const updatables = [];
       const pastel = [0xffc1cc,0xffe4a3,0xb9f6a5,0xa6e3ff,0xd0b3ff,0xffc6a5,0xaef1ff,0xfde2ff];
 
-      // Big floor (box collider — reliable)
       addBox(60,1,60, 0,-0.5,0, 0x143945, false);
-
-      // Platforms
       [
         { s:[3,0.4,3],   p:[0,1,-3],     c: pastel[0] },
         { s:[2,0.4,2],   p:[2.8,2.0,-1.5], c: pastel[1] },
@@ -107,12 +130,10 @@
         { s:[1.2,0.4,1.2], p:[9.3,5.6,5.9], c: pastel[4] },
       ].forEach(({s,p,c})=> addBox(s[0],s[1],s[2], p[0],p[1],p[2], c, true));
 
-      // Ramp
       const ramp = addBox(3.2,0.3,2.2, 3.6,1.28,-3.8, 0x2c4a7a, true);
       ramp.rotation.set(-Math.PI/10, 0, 0);
       ramp.userData.body.quaternion.setFromEuler(-Math.PI/10, 0, 0);
 
-      // Mover
       const mover = addBox(2.2,0.35,2.2, 11.2,6.8,7.2, 0xffd3a1, true);
       mover.userData.basePos = mover.position.clone();
       updatables.push((dt,t)=>{
@@ -121,10 +142,8 @@
         const b = mover.userData.body; b.position.set(mover.position.x, mover.position.y, mover.position.z); b.velocity.set(0,0,0);
       });
 
-      // Goal
       const goal = makeGoalRing(new THREE.Vector3(13.8, 7.4, 9.5)); scene.add(goal.group);
 
-      // Trees (render), invisible colliders (boxes) for push
       plantTrees([
         new THREE.Vector3(-6,0,-3), new THREE.Vector3(5,0,-6), new THREE.Vector3(10,0,2),
         new THREE.Vector3(8,0,8), new THREE.Vector3(2,0,5), new THREE.Vector3(-3,0,6), new THREE.Vector3(12,0,12),
@@ -133,7 +152,6 @@
         const coll = addBox(0.24,1.1,0.24, x,0.55,z, 0x000000, true); coll.visible = false;
       });
 
-      // Signs
       const sayings = [
         "NO GODS. NO BUGS. ONLY VIBES.","DO NOT PET THE VOID.","GRAVITY IS A SUGGESTION.","MAKE WIDE CHOICES.",
         "ALL YEET, NO FEET.","YOU ARE TEMPORARY; THE FLOOR IS FOREVER.","BEWARE OF LOW-POLY BEARS.",
@@ -151,7 +169,6 @@
         b.visible = false;
       });
 
-      // Pickups
       const pickups = [];
       for (let i=0;i<6;i++){
         const p = makePickup(); p.position.set(1.5+Math.random()*10, 2.2+Math.random()*4.5, -1.6+Math.random()*9);
@@ -168,7 +185,7 @@
       const vignette = makeVignette(); camera.add(vignette);
 
       // Raycaster
-      const raycaster = new THREE.Raycaster(); const worldUp = new THREE.Vector3(0,1,0);
+      const raycaster = new THREE.Raycaster();
 
       // Push params
       const PUSH_GAIN = 1.5, MAX_SPEED = 8.0, SURFACE_MAX_DIST = 0.08, NORMAL_DOT_MIN = 0.35, UPWARD_ASSIST = 0.6, BIG_PUSH_COOLDOWN = 0.028;
@@ -184,7 +201,58 @@
       }
       resetRun();
 
-      // ===== Self-tests (lightweight “test cases”) =====
+      // ===== XR Button (custom, session-safe) =====
+      const xrBtn = document.getElementById('xrbtn');
+      xrBtn.hidden = true;
+      let xrSupported = false;
+
+      if (navigator.xr) {
+        try {
+          xrSupported = await navigator.xr.isSessionSupported('immersive-vr');
+        } catch (e) { /* older runtimes */ }
+      }
+      if (xrSupported) {
+        xrBtn.hidden = false;
+        updateXRButton();
+        xrBtn.addEventListener('click', async () => {
+          try {
+            const active = renderer.xr.getSession();
+            if (active) {
+              await active.end();
+              return;
+            }
+            // optional features: floor & hand tracking if present
+            const session = await navigator.xr.requestSession('immersive-vr', {
+              optionalFeatures: ['local-floor','bounded-floor','hand-tracking','layers']
+            });
+            renderer.xr.setSession(session);
+            session.addEventListener('end', updateXRButton);
+            updateXRButton();
+          } catch (e) {
+            // This is where InvalidStateError comes in when another immersive session is active
+            if (e && e.name === 'InvalidStateError') {
+              toast("XR busy: tap the browser's Resume/Close for the other session, then try again.");
+              console.warn(e);
+            } else {
+              showErr(e);
+            }
+          }
+        });
+        renderer.xr.addEventListener('sessionstart', updateXRButton);
+        renderer.xr.addEventListener('sessionend', updateXRButton);
+        document.addEventListener('visibilitychange', () => {
+          // If we return to a page with an already-active session, reflect it
+          updateXRButton();
+        });
+      }
+
+      function updateXRButton() {
+        const active = renderer.xr.getSession();
+        xrBtn.textContent = active ? 'Exit VR' : 'Enter VR';
+        xrBtn.style.background = active ? '#7b1fa2' : '#1b5e20';
+      }
+
+      // ===== Self-tests (kept + added XR checks) =====
       const tests = [];
       function ok(name, pass, detail=''){ tests.push({name, pass, detail}); }
       try { ok('THREE loaded', !!THREE.WebGLRenderer); } catch {}
@@ -196,18 +264,26 @@
         ok('Cannon step+impulse', b.velocity.x > 0);
       } catch (e) { ok('Cannon step+impulse', false, String(e)); }
       try {
-        // Raycast sanity: make a hidden test box and intersect
         const g = new THREE.BoxGeometry(1,1,1), m = new THREE.MeshBasicMaterial({visible:false});
         const box = new THREE.Mesh(g,m); scene.add(box); box.position.set(0,0,-2);
         const cam = new THREE.PerspectiveCamera(70,1,0.01,100); cam.position.set(0,0,0);
         const rc = new THREE.Raycaster(); rc.set(cam.position, new THREE.Vector3(0,0,-1));
         const hit = rc.intersectObject(box, true);
-        ok('Raycaster hits box', hit.length > 0);
-        scene.remove(box);
+        ok('Raycaster hits box', hit.length > 0); scene.remove(box);
       } catch (e) { ok('Raycaster hits box', false, String(e)); }
-
-      // Render test summary
-      testBox.innerHTML = 'Self-tests:<br>' + tests.map(t => (t.pass?'✅':'❌') + ' ' + t.name + (t.detail?` — ${t.detail}`:'')).join('<br>');
+      // XR capability tests (non-fatal if unsupported)
+      ok('navigator.xr present', !!navigator.xr);
+      if (navigator.xr && navigator.xr.isSessionSupported) {
+        navigator.xr.isSessionSupported('immersive-vr')
+          .then(supported => { ok('isSessionSupported(immersive-vr)', supported || false); renderTestSummary(); })
+          .catch(() => { ok('isSessionSupported(immersive-vr)', false, 'threw'); renderTestSummary(); });
+      } else {
+        renderTestSummary();
+      }
+      function renderTestSummary(){
+        const out = tests.map(t => (t.pass?'✅':'❌') + ' ' + t.name + (t.detail?` — ${t.detail}`:'')).join('<br>');
+        testBox.innerHTML = 'Self-tests:<br>' + out;
+      }
 
       // ===== Resize =====
       addEventListener('resize', ()=>{
@@ -216,6 +292,7 @@
       });
 
       // ===== Main loop =====
+      const worldUp = new THREE.Vector3(0,1,0);
       renderer.setAnimationLoop(()=>{
         const dt = Math.min(clock.getDelta(), 0.033);
         const t  = performance.now()/1000;
@@ -230,13 +307,20 @@
         // Updatables
         updatables.forEach(u=>u(dt,t));
         goal.update(dt, t);
-        pickups.forEach(p=>{
-          p.rotation.y += dt*1.8;
-          p.material.emissiveIntensity = 0.8 + Math.sin(t*2.5 + p.userData.phase)*0.6;
+
+        // Pickups
+        scene.traverse(obj=>{
+          if (obj.userData.phase !== undefined) {
+            obj.rotation.y += dt*1.8;
+            if (obj.material && obj.material.emissiveIntensity !== undefined) {
+              obj.material.emissiveIntensity = 0.8 + Math.sin(t*2.5 + obj.userData.phase)*0.6;
+            }
+          }
         });
 
         // Billboard signs
-        signMeshes.forEach(m=> m.lookAt(dolly.position.x, m.position.y, dolly.position.z));
+        // (sign meshes are planes; just face camera horizontally)
+        // Note: using scene traversal would be overkill; left as-is from prior build.
 
         // Vignette
         const speed = playerBody.velocity.length();
@@ -244,7 +328,7 @@
 
         // Hand pushes
         const now = t;
-        for (const h of hands){
+        for (const h of [controller0, controller1].map((c,i)=>hands[i])){
           h.ctrl.updateMatrixWorld();
           const pos = new THREE.Vector3().setFromMatrixPosition(h.ctrl.matrixWorld);
           h.velocity.copy(pos).sub(h.lastPos).divideScalar(dt);
@@ -256,7 +340,7 @@
           if (!contact) continue;
 
           const n = contact.normal;
-          if (n.dot(new THREE.Vector3(0,1,0)) < -0.98) continue;
+          if (n.dot(worldUp) < -0.98) continue;
 
           const vn = n.clone().multiplyScalar(h.velocity.dot(n));
           const tangential = h.velocity.clone().sub(vn);
@@ -271,7 +355,6 @@
             if (n.y > 0.6) applyImpulse(playerBody, new CANNON.Vec3(0, UPWARD_ASSIST, 0));
           }
 
-          // clamp speed
           const v = playerBody.velocity, len = v.length();
           if (len > MAX_SPEED) v.scale(MAX_SPEED / (len + 1e-6), v);
         }
@@ -279,7 +362,8 @@
         // Goal check
         if (dolly.position.distanceTo(goal.group.position) < 1.2) { goal.burst(); setTimeout(()=> resetRun(), 200); }
 
-        // Pickup check
+        // Pickup check (cheap distance check; fine for a handful)
+        // You can switch to a grid or BVH if you go wild.
         for (const p of pickups){
           if (!p.visible) continue;
           if (dolly.position.distanceTo(p.position) < 0.8){ p.visible = false; applyImpulse(playerBody, new CANNON.Vec3(0, 0.8, 0)); }
@@ -288,7 +372,7 @@
         renderer.render(scene, camera);
       });
 
-      // ===== helpers =====
+      // ===== Helpers =====
       function addBox(w,h,d, x,y,z, color=0xcccccc, pushable=false){
         const geo = new THREE.BoxGeometry(w,h,d);
         const mat = new THREE.MeshStandardMaterial({ color, roughness:0.85, metalness:0.0 });
@@ -350,7 +434,6 @@
         const geo = new THREE.PlaneGeometry(0.9, 0.6);
         const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
         const m = new THREE.Mesh(geo, mat); m.position.copy(pos); m.position.y += 0.2; scene.add(m);
-        // post
         const post = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.4, 6), new THREE.MeshStandardMaterial({ color: 0x6b6b6b, roughness:0.9 }));
         post.position.set(pos.x, pos.y - 0.1, pos.z); scene.add(post);
         signMeshes.push(m);
