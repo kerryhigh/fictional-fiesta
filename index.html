@@ -1,316 +1,401 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Order Smash VR — WebXR mini‑game</title>
+  <title>WebXR Mini City – Starter</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    html, body { margin: 0; height: 100%; overflow: hidden; background: #050510; }
-    #ui {
-      position: fixed; left: 12px; top: 12px; z-index: 10;
-      background: rgba(0,0,0,.45); color: #fff; font: 600 16px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      padding: 10px 12px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,.25);
-      user-select: none; -webkit-user-select: none;
+    html, body { margin:0; height:100%; background:#111; overflow:hidden; }
+    #info {
+      position: fixed; top: 8px; left: 8px; color: #eee; font: 14px/1.4 system-ui, sans-serif;
+      background: rgba(0,0,0,.4); padding: 8px 10px; border-radius: 8px;
     }
-    #msg {
-      position: fixed; inset: 0; display: grid; place-items: center; z-index: 9; pointer-events: none;
-      font: 700 20px/1.3 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: #e9ecff;
-      text-shadow: 0 2px 12px rgba(0,0,0,.6);
-    }
-    #msg .panel {
-      background: linear-gradient(180deg, rgba(25,25,60,.9), rgba(10,10,25,.85));
-      padding: 18px 20px; border-radius: 16px; box-shadow: 0 12px 60px rgba(0,0,0,.55);
-      border: 1px solid rgba(255,255,255,.08);
-      max-width: 540px; text-align: center;
-    }
-    a.link { color: #9cc2ff; text-decoration: none; border-bottom: 1px dashed rgba(156,194,255,.6); }
+    a { color:#8cf; text-decoration:none }
   </style>
 </head>
 <body>
-  <div id="ui">Score: <span id="score">0</span> · Time: <span id="time">60.0</span>s · Best: <span id="best">0</span></div>
-  <div id="msg"><div class="panel" id="panelText">Loading…</div></div>
+  <div id="info">Mini City • Left stick: move/strafe • Right stick: turn • Desktop: WASD + QE • NARF!</div>
   <script type="module">
-    import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
-    import { VRButton } from 'https://unpkg.com/three@0.160.0/examples/jsm/webxr/VRButton.js';
+  import * as THREE from 'https://unpkg.com/three@0.159.0/build/three.module.js';
+  import { VRButton } from 'https://unpkg.com/three@0.159.0/examples/jsm/webxr/VRButton.js';
 
-    // ——— core setup ———
-    const scene = new THREE.Scene();
-    scene.fog = new THREE.Fog(0x050510, 8, 20);
-    scene.background = new THREE.Color(0x050510);
+  // --- basics -------------------------------------------------------
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x99bbff);
+  scene.fog = new THREE.Fog(0x99bbff, 80, 300);
 
-    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 50);
-    camera.position.set(0, 1.6, 0);
+  const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 1000);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.xr.enabled = true;
-    document.body.appendChild(renderer.domElement);
-    document.body.appendChild(VRButton.createButton(renderer));
+  const renderer = new THREE.WebGLRenderer({ antialias:true });
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(devicePixelRatio);
+  renderer.xr.enabled = true;
+  document.body.appendChild(renderer.domElement);
+  document.body.appendChild(VRButton.createButton(renderer));
 
-    window.addEventListener('resize', () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-    });
+  // Player dolly so we can move the XR camera around
+  const dolly = new THREE.Object3D();
+  dolly.position.set(0, 0, 0);
+  scene.add(dolly);
+  dolly.add(camera);
 
-    // ——— lights & stage ———
-    const hemi = new THREE.HemisphereLight(0xddeeff, 0x334466, 1.0);
-    scene.add(hemi);
-    const dir = new THREE.DirectionalLight(0xffffff, 0.6);
-    dir.position.set(3, 6, 2);
-    scene.add(dir);
+  // Lights
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x334455, 0.9);
+  scene.add(hemi);
+  const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+  sun.position.set(1, 2, 0.5).multiplyScalar(200);
+  sun.castShadow = false;
+  scene.add(sun);
 
-    const grid = new THREE.GridHelper(14, 28, 0x334466, 0x112244);
-    grid.position.y = -0.001;
-    scene.add(grid);
+  // --- city params --------------------------------------------------
+  const BLOCK_SIZE = 40;      // size of a city block
+  const ROAD_WIDTH = 8;       // width of roads
+  const GRID_HALF = 3;        // blocks in each direction (total = (2*GRID_HALF+1)^2)
+  const CITY_EXTENT = (BLOCK_SIZE + ROAD_WIDTH) * GRID_HALF + BLOCK_SIZE * 0.5;
 
-    // fun ambient blobs
-    const blobby = new THREE.Group();
-    scene.add(blobby);
-    for (let i = 0; i < 18; i++) {
-      const g = new THREE.IcosahedronGeometry(0.06 + Math.random() * 0.12, 0);
-      const m = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(Math.random(), 0.5, 0.55), emissive: 0x111122, roughness: 0.7, metalness: 0.05 });
-      const mesh = new THREE.Mesh(g, m);
-      mesh.position.set((Math.random() - 0.5) * 6, 0.8 + Math.random() * 2.2, -2 - Math.random() * 3);
-      blobby.add(mesh);
+  // Ground base
+  {
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(2000, 2000),
+      new THREE.MeshPhongMaterial({ color: 0x99d18f }) // grass
+    );
+    ground.rotation.x = -Math.PI/2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+  }
+
+  // --- roads (simple grid) -----------------------------------------
+  const roadMat = new THREE.MeshPhongMaterial({ color: 0x333333 });
+  function makeRoad(w, h) {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), roadMat);
+    m.rotation.x = -Math.PI/2;
+    m.receiveShadow = true;
+    return m;
+  }
+
+  // Build vertical and horizontal roads spanning the city
+  for (let i = -GRID_HALF; i <= GRID_HALF; i++) {
+    const offset = i * (BLOCK_SIZE + ROAD_WIDTH);
+    // Z (north-south) road strip across X
+    const zRoad = makeRoad( (GRID_HALF*2+1)*(BLOCK_SIZE+ROAD_WIDTH)+BLOCK_SIZE, ROAD_WIDTH );
+    zRoad.position.set(0, 0.001, offset);
+    scene.add(zRoad);
+
+    // X (east-west) road strip across Z
+    const xRoad = makeRoad( ROAD_WIDTH, (GRID_HALF*2+1)*(BLOCK_SIZE+ROAD_WIDTH)+BLOCK_SIZE );
+    xRoad.position.set(offset, 0.001, 0);
+    scene.add(xRoad);
+  }
+
+  // Lane lines: thin white planes down the center of each road
+  const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  for (let i = -GRID_HALF; i <= GRID_HALF; i++) {
+    const offset = i * (BLOCK_SIZE + ROAD_WIDTH);
+    const dashLen = 2, gapLen = 2;
+    const totalLen = (GRID_HALF*2+1)*(BLOCK_SIZE+ROAD_WIDTH)+BLOCK_SIZE;
+    let z = -totalLen/2;
+    while (z < totalLen/2) {
+      const seg = new THREE.Mesh(new THREE.PlaneGeometry(0.3, dashLen), lineMat);
+      seg.rotation.x = -Math.PI/2;
+      seg.position.set(offset, 0.003, z + dashLen/2);
+      scene.add(seg);
+      z += dashLen + gapLen;
     }
 
-    // ——— controllers ———
-    function makePaddle(color = 0xffbb33) {
-      const g = new THREE.CapsuleGeometry(0.024, 0.26, 8, 16);
-      const m = new THREE.MeshStandardMaterial({ color, emissive: 0x331100, emissiveIntensity: 0.4, metalness: 0.2, roughness: 0.5 });
-      const mesh = new THREE.Mesh(g, m);
-      mesh.rotation.z = Math.PI * 0.5;
-      return mesh;
+    let x = -totalLen/2;
+    while (x < totalLen/2) {
+      const seg = new THREE.Mesh(new THREE.PlaneGeometry(dashLen, 0.3), lineMat);
+      seg.rotation.x = -Math.PI/2;
+      seg.position.set(x + dashLen/2, 0.003, offset);
+      scene.add(seg);
+      x += dashLen + gapLen;
     }
+  }
 
-    const controller1 = renderer.xr.getController(0);
-    const controller2 = renderer.xr.getController(1);
-    controller1.addEventListener('connected', (e) => (controller1.userData.inputSource = e.data));
-    controller1.addEventListener('disconnected', () => (controller1.userData.inputSource = null));
-    controller2.addEventListener('connected', (e) => (controller2.userData.inputSource = e.data));
-    controller2.addEventListener('disconnected', () => (controller2.userData.inputSource = null));
+  // --- buildings (instanced for perf) -------------------------------
+  const buildingGeom = new THREE.BoxGeometry(1, 1, 1);
+  const buildingMat = new THREE.MeshLambertMaterial({ color: 0xcccccc });
+  const buildingCount = 800;
+  const buildings = new THREE.InstancedMesh(buildingGeom, buildingMat, buildingCount);
+  scene.add(buildings);
 
-    controller1.add(makePaddle(0xffbb55));
-    controller2.add(makePaddle(0x66ddff));
-    scene.add(controller1, controller2);
+  // --- trees (instanced) --------------------------------------------
+  const trunk = new THREE.CylinderGeometry(0.2, 0.2, 2, 6);
+  const leaves = new THREE.ConeGeometry(1.2, 2.5, 8);
+  const treeMatTrunk = new THREE.MeshLambertMaterial({ color: 0x6b4f2a });
+  const treeMatLeaves = new THREE.MeshLambertMaterial({ color: 0x2e8b57 });
+  const treeTrunks = new THREE.InstancedMesh(trunk, treeMatTrunk, 300);
+  const treeCrowns = new THREE.InstancedMesh(leaves, treeMatLeaves, 300);
+  scene.add(treeTrunks, treeCrowns);
 
-    const CSTATE = () => ({ ctrl: null, world: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), init: false });
-    const cs1 = CSTATE(); cs1.ctrl = controller1;
-    const cs2 = CSTATE(); cs2.ctrl = controller2;
+  // Scatter buildings & trees inside blocks (avoid roads)
+  {
+    const tmp = new THREE.Matrix4();
+    const up = new THREE.Vector3(0,1,0);
+    let b = 0, t = 0;
 
-    // ——— game state ———
-    let playing = false;
-    let score = 0;
-    let best = Number(localStorage.getItem('orderSmashHigh') || 0);
-    let timeLeft = 60;
-    let spawnAccum = 0;
-    const uiScore = document.getElementById('score');
-    const uiTime = document.getElementById('time');
-    const uiBest = document.getElementById('best'); uiBest.textContent = best;
-    const msg = document.getElementById('msg');
-    const panelText = document.getElementById('panelText');
-
-    const targets = [];
-    const particles = [];
-    const palette = [0xf94144, 0xf3722c, 0xf8961e, 0xf9c74f, 0x43aa8b, 0x577590];
-    const targetGeo = new THREE.BoxGeometry(0.16, 0.16, 0.16);
-
-    function setPanel(html) {
-      panelText.innerHTML = html;
-    }
-
-    function setHUD() {
-      uiScore.textContent = String(score);
-      uiTime.textContent = timeLeft.toFixed(1);
-      uiBest.textContent = String(best);
-    }
-
-    function showIntro() {
-      setPanel(`
-        <div style="font-size:22px; margin-bottom:6px">Order Smash VR</div>
-        <div style="opacity:.9; margin-bottom:10px">Bat the incoming cubes to pop them. Swing with some speed for a hit.<br/>60‑second run. Haptics on hit (if your controllers support it).</div>
-        <div style="opacity:.85; font-weight:600;">Click “Enter VR” then press <em>trigger</em> to start.</div>
-        <div style="opacity:.7; margin-top:8px; font-size:13px">Pro tip: the spawn rate scales with your score. Keep up.</div>
-      `);
-      msg.style.display = '';
-    }
-
-    function startGame() {
-      // clear scene targets/particles
-      for (let i = targets.length - 1; i >= 0; i--) removeTarget(i);
-      for (let i = particles.length - 1; i >= 0; i--) removeParticle(i);
-      score = 0; timeLeft = 60; spawnAccum = 0; playing = true; setHUD();
-      msg.style.display = 'none';
-    }
-
-    function gameOver() {
-      playing = false;
-      if (score > best) { best = score; localStorage.setItem('orderSmashHigh', String(best)); }
-      setHUD();
-      setPanel(`<div style="font-size:22px; margin-bottom:6px">Time!</div>
-        <div style="margin-bottom:8px">Score: <b>${score}</b> · Best: <b>${best}</b></div>
-        <div style="opacity:.9">Press <em>trigger</em> to go again.</div>`);
-      msg.style.display = '';
-    }
-
-    function maybeStart() { if (!playing && renderer.xr.isPresenting) startGame(); }
-    controller1.addEventListener('selectstart', maybeStart);
-    controller2.addEventListener('selectstart', maybeStart);
-
-    // ——— targets ———
-    function spawnTarget() {
-      const mat = new THREE.MeshStandardMaterial({ color: palette[(Math.random() * palette.length) | 0], roughness: 0.65, metalness: 0.08, emissive: 0x0, envMapIntensity: 0.2 });
-      const mesh = new THREE.Mesh(targetGeo, mat);
-      const angle = (Math.random() - 0.5) * Math.PI * 0.9; // front arc
-      const r = 2.0 + Math.random() * 2.2;
-      const y = 1.0 + Math.random() * 1.8;
-      mesh.position.set(Math.sin(angle) * r, y, -2.2 - Math.random() * 3.6);
-      mesh.userData = {
-        vel: new THREE.Vector3((Math.random() - 0.5) * 0.24, (Math.random() - 0.35) * 0.18, 0.12 + Math.random() * 0.18),
-        rot: new THREE.Vector3(Math.random() * 1.2, Math.random() * 1.2, Math.random() * 1.2),
-        radius: 0.13,
-        life: 24
-      };
-      scene.add(mesh);
-      targets.push(mesh);
-    }
-
-    function removeTarget(i) {
-      const t = targets[i];
-      if (!t) return;
-      scene.remove(t);
-      t.geometry.dispose();
-      t.material.dispose();
-      targets.splice(i, 1);
-    }
-
-    // ——— particles ———
-    function popAt(pos, color) {
-      const n = 70;
-      const positions = new Float32Array(n * 3);
-      const velocities = new Float32Array(n * 3);
-      for (let i = 0; i < n; i++) {
-        positions[3 * i + 0] = pos.x;
-        positions[3 * i + 1] = pos.y;
-        positions[3 * i + 2] = pos.z;
-        const dir = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.2, Math.random() - 0.5).normalize().multiplyScalar(0.8 + Math.random() * 1.2);
-        velocities[3 * i + 0] = dir.x;
-        velocities[3 * i + 1] = dir.y;
-        velocities[3 * i + 2] = dir.z;
+    function inRoad(x, z) {
+      // near any road line?
+      for (let i = -GRID_HALF; i <= GRID_HALF; i++) {
+        const r = i*(BLOCK_SIZE+ROAD_WIDTH);
+        if (Math.abs(z - r) < ROAD_WIDTH*0.5+1) return true;
+        if (Math.abs(x - r) < ROAD_WIDTH*0.5+1) return true;
       }
-      const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-      g.setAttribute('velocity', new THREE.BufferAttribute(velocities, 3));
-      const m = new THREE.PointsMaterial({ size: 0.03, color, transparent: true, opacity: 1 });
-      const p = new THREE.Points(g, m);
-      p.userData = { life: 0.7 };
-      scene.add(p);
-      particles.push(p);
+      return false;
     }
 
-    function removeParticle(i) {
-      const p = particles[i];
-      if (!p) return;
-      scene.remove(p);
-      p.geometry.dispose();
-      p.material.dispose();
-      particles.splice(i, 1);
+    // Buildings
+    for (let i = 0; i < buildingCount; i++) {
+      const x = (Math.random()*2-1) * CITY_EXTENT;
+      const z = (Math.random()*2-1) * CITY_EXTENT;
+      if (inRoad(x,z)) { i--; continue; }
+
+      const w = 4 + Math.random()*8;
+      const d = 4 + Math.random()*8;
+      const h = 6 + Math.random()*50;
+
+      const m = new THREE.Matrix4()
+        .makeScale(w, h, d)
+        .premultiply(new THREE.Matrix4().makeTranslation(0, 0.5, 0));
+      tmp.identity()
+        .makeRotationY(Math.random()*Math.PI*2)
+        .setPosition(x, 0, z)
+        .multiply(m);
+      buildings.setMatrixAt(b++, tmp);
     }
+    buildings.count = b;
+    buildings.instanceMatrix.needsUpdate = true;
 
-    // ——— haptics ———
-    function pulse(ctrl, strength = 0.7, ms = 60) {
-      const is = ctrl.userData.inputSource;
-      const h = is && is.gamepad && is.gamepad.hapticActuators && is.gamepad.hapticActuators[0];
-      try { h && h.pulse && h.pulse(strength, ms); } catch (_) {}
+    // Trees
+    for (let i = 0; i < 300; i++) {
+      const x = (Math.random()*2-1) * CITY_EXTENT;
+      const z = (Math.random()*2-1) * CITY_EXTENT;
+      if (inRoad(x,z)) { i--; continue; }
+
+      const trunkH = 1.8 + Math.random()*0.8;
+      const crownH = 2.0 + Math.random()*1.5;
+      const m1 = new THREE.Matrix4()
+        .makeScale(1, trunkH/2, 1)
+        .premultiply(new THREE.Matrix4().makeTranslation(0, trunkH/2, 0));
+      tmp.identity().setPosition(x, 0, z).multiply(m1);
+      treeTrunks.setMatrixAt(t, tmp);
+
+      const m2 = new THREE.Matrix4()
+        .makeScale(1, crownH/2, 1)
+        .premultiply(new THREE.Matrix4().makeTranslation(0, trunkH + crownH/2 - 0.3, 0));
+      tmp.identity().setPosition(x, 0, z).multiply(m2);
+      treeCrowns.setMatrixAt(t, tmp);
+
+      t++;
     }
+    treeTrunks.count = t; treeCrowns.count = t;
+    treeTrunks.instanceMatrix.needsUpdate = true;
+    treeCrowns.instanceMatrix.needsUpdate = true;
+  }
 
-    // ——— helpers ———
-    function updateControllerState(cs, dt) {
-      cs.ctrl.getWorldPosition(cs.world);
-      if (!cs.init) { cs.prev.copy(cs.world); cs.init = true; }
-      cs.vel.copy(cs.world).sub(cs.prev).multiplyScalar(1 / dt);
-      cs.prev.copy(cs.world);
+  // --- billboards with goofy messages -------------------------------
+  const messages = [
+    "WELCOME TO NAZUGRIT CITY — BOAR CROSSING AHEAD",
+    "HUNGRY? TOO BAD. THIS IS A SIGN, NOT A RESTAURANT.",
+    "TRY OUR INVISIBLE COFFEE — 0 CALORIES, 0 FLAVOR",
+    "WANTED: TREE HUGGER. MUST LOVE SPLINTERS.",
+    "SPEED LIMIT: YES",
+    "NOW HIRING: PROFESSIONAL BUTTON PRESSER",
+    "THIS BILLBOARD LEFT BLANK ON PURPOSE. NARF!"
+  ];
+
+  function makeBillboardTexture(text) {
+    const w = 512, h = 256;
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#222'; ctx.fillRect(0,0,w,h);
+    ctx.fillStyle = '#0ff';
+    ctx.font = 'bold 36px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    wrapText(ctx, text, w/2, h/2, w-40, 42);
+    const tex = new THREE.CanvasTexture(c);
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy?.() ?? 1;
+    return tex;
+  }
+  function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
+    const words = text.split(' ');
+    let line = '', lines = [];
+    for (let n=0; n<words.length; n++) {
+      let test = line + words[n] + ' ';
+      if (ctx.measureText(test).width > maxWidth && n>0) {
+        lines.push(line); line = words[n] + ' ';
+      } else line = test;
     }
+    lines.push(line);
+    const startY = y - ((lines.length-1) * lineHeight)/2;
+    lines.forEach((ln, i) => ctx.fillText(ln.trim(), x, startY + i*lineHeight));
+  }
 
-    function checkHit(target, cs) {
-      const dist = target.position.distanceTo(cs.world);
-      const speed = cs.vel.length();
-      return dist < (target.userData.radius + 0.12) && speed > 0.7; // needs a real swing
-    }
+  const billboardGeom = new THREE.PlaneGeometry(10, 5);
+  const postGeom = new THREE.CylinderGeometry(0.15, 0.15, 6, 6);
+  function addBillboard(x, z, text) {
+    const tex = makeBillboardTexture(text);
+    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+    const board = new THREE.Mesh(billboardGeom, mat);
+    board.position.set(x, 4, z);
+    board.lookAt(0,4,0);
 
-    // ——— session hooks ———
-    renderer.xr.addEventListener('sessionstart', () => {
-      showIntro();
-    });
-    renderer.xr.addEventListener('sessionend', () => {
-      msg.style.display = '';
-      setPanel('<div style="font-size:18px">Exited VR — refresh or re‑enter to play again.</div>');
-      playing = false;
-    });
+    const post = new THREE.Mesh(postGeom, new THREE.MeshLambertMaterial({ color: 0x555555 }));
+    post.position.set(x, 3, z);
+    scene.add(post, board);
+    return { board, tex };
+  }
 
-    // ——— main loop ———
-    const clock = new THREE.Clock();
-    showIntro();
-
-    function animate() {
-      const dt = Math.min(clock.getDelta(), 0.05);
-
-      // floaty ambiance
-      blobby.children.forEach((m, i) => {
-        m.position.y += Math.sin(performance.now() * 0.001 + i) * 0.0006;
-        m.rotation.y += 0.2 * dt;
-      });
-
-      updateControllerState(cs1, dt);
-      updateControllerState(cs2, dt);
-
-      if (playing) {
-        timeLeft -= dt; if (timeLeft <= 0) { timeLeft = 0; gameOver(); }
-        spawnAccum += dt;
-        const rate = Math.max(0.38, 1.2 - score * 0.02); // adaptive spawn
-        if (spawnAccum >= rate) { spawnAccum = 0; spawnTarget(); }
-
-        for (let i = targets.length - 1; i >= 0; i--) {
-          const t = targets[i];
-          t.position.addScaledVector(t.userData.vel, dt);
-          t.rotation.x += t.userData.rot.x * dt;
-          t.rotation.y += t.userData.rot.y * dt;
-          t.rotation.z += t.userData.rot.z * dt;
-          t.userData.life -= dt;
-          if (t.userData.life <= 0 || t.position.z > 0.3) { removeTarget(i); continue; }
-          if (checkHit(t, cs1) || checkHit(t, cs2)) {
-            popAt(t.position, t.material.color.getHex());
-            pulse(controller1); pulse(controller2);
-            removeTarget(i);
-            score++;
-          }
-        }
-
-        for (let i = particles.length - 1; i >= 0; i--) {
-          const p = particles[i];
-          const pos = p.geometry.attributes.position;
-          const vel = p.geometry.attributes.velocity;
-          for (let j = 0; j < pos.count; j++) {
-            vel.array[3 * j + 1] -= 0.9 * dt; // tiny gravity
-            pos.array[3 * j + 0] += vel.array[3 * j + 0] * dt;
-            pos.array[3 * j + 1] += vel.array[3 * j + 1] * dt;
-            pos.array[3 * j + 2] += vel.array[3 * j + 2] * dt;
-          }
-          p.geometry.attributes.position.needsUpdate = true;
-          p.userData.life -= dt;
-          p.material.opacity = Math.max(0, p.userData.life / 0.7);
-          if (p.userData.life <= 0) removeParticle(i);
-        }
-
-        setHUD();
+  const billboards = [];
+  for (let i = -GRID_HALF; i <= GRID_HALF; i++) {
+    const x = i*(BLOCK_SIZE+ROAD_WIDTH) + (BLOCK_SIZE/2) * (i%2===0?1:-1);
+    const z = (i%2===0?1:-1) * (BLOCK_SIZE+ROAD_WIDTH) * GRID_HALF;
+    billboards.push(addBillboard(x, z, messages[(i+messages.length)%messages.length]));
+  }
+  // Rotate billboard messages every ~10 seconds
+  let msgTick = 0;
+  function rotateMessages(dt) {
+    msgTick += dt;
+    if (msgTick > 10) {
+      msgTick = 0;
+      for (const b of billboards) {
+        const text = messages[Math.floor(Math.random()*messages.length)];
+        b.tex.dispose();
+        b.board.material.map = makeBillboardTexture(text);
+        b.board.material.needsUpdate = true;
       }
-
-      renderer.render(scene, camera);
     }
+  }
 
-    renderer.setAnimationLoop(animate);
+  // --- cars that loop roads -----------------------------------------
+  const carGeom = new THREE.BoxGeometry(2, 1, 4);
+  const carMat = new THREE.MeshLambertMaterial({ color: 0xff5533 });
+  const cars = [];
+  const lanes = [];
+  for (let i = -GRID_HALF; i <= GRID_HALF; i++) {
+    lanes.push({ axis:'z', pos: i*(BLOCK_SIZE+ROAD_WIDTH) + ROAD_WIDTH*0.25, dir: 1 });
+    lanes.push({ axis:'z', pos: i*(BLOCK_SIZE+ROAD_WIDTH) - ROAD_WIDTH*0.25, dir:-1 });
+    lanes.push({ axis:'x', pos: i*(BLOCK_SIZE+ROAD_WIDTH) + ROAD_WIDTH*0.25, dir: 1 });
+    lanes.push({ axis:'x', pos: i*(BLOCK_SIZE+ROAD_WIDTH) - ROAD_WIDTH*0.25, dir:-1 });
+  }
+  const ROAD_SPAN = (GRID_HALF*2+1)*(BLOCK_SIZE+ROAD_WIDTH)+BLOCK_SIZE;
+  for (let i=0; i<24; i++) {
+    const lane = lanes[Math.floor(Math.random()*lanes.length)];
+    const mesh = new THREE.Mesh(carGeom, carMat.clone());
+    mesh.material.color.offsetHSL(Math.random()*0.2, 0, 0);
+    mesh.position.y = 0.6;
+    if (lane.axis === 'z') {
+      mesh.position.x = lane.pos;
+      mesh.position.z = (Math.random()*2-1)*ROAD_SPAN/2;
+      mesh.rotation.y = lane.dir>0 ? 0 : Math.PI;
+    } else {
+      mesh.position.z = lane.pos;
+      mesh.position.x = (Math.random()*2-1)*ROAD_SPAN/2;
+      mesh.rotation.y = lane.dir>0 ? -Math.PI/2 : Math.PI/2;
+    }
+    mesh.userData = { lane, speed: 8 + Math.random()*10 };
+    scene.add(mesh);
+    cars.push(mesh);
+  }
+  function updateCars(dt) {
+    for (const c of cars) {
+      const { lane, speed } = c.userData;
+      if (lane.axis === 'z') {
+        c.position.z += lane.dir * speed * dt;
+        if (c.position.z > ROAD_SPAN/2) c.position.z = -ROAD_SPAN/2;
+        if (c.position.z < -ROAD_SPAN/2) c.position.z = ROAD_SPAN/2;
+      } else {
+        c.position.x += lane.dir * speed * dt;
+        if (c.position.x > ROAD_SPAN/2) c.position.x = -ROAD_SPAN/2;
+        if (c.position.x < -ROAD_SPAN/2) c.position.x = ROAD_SPAN/2;
+      }
+    }
+  }
+
+  // --- locomotion (VR sticks + desktop fallback) --------------------
+  const keys = new Set();
+  addEventListener('keydown', e => keys.add(e.code));
+  addEventListener('keyup', e => keys.delete(e.code));
+  addEventListener('resize', onResize);
+  function onResize() {
+    camera.aspect = innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  }
+
+  let yaw = 0;
+  const clock = new THREE.Clock();
+
+  function getXRSticks() {
+    const session = renderer.xr.getSession();
+    let left = { x:0, y:0 }, right = { x:0, y:0 };
+    if (!session) return { left, right };
+    for (const src of session.inputSources) {
+      const gp = src.gamepad;
+      if (!gp || gp.axes.length < 2) continue;
+      // Many controllers: first 2 axes = primary stick; sometimes 4 axes (stick1 + stick2)
+      if (src.handedness === 'left') {
+        left.x = gp.axes[0] || 0;
+        left.y = gp.axes[1] || 0;
+      } else if (src.handedness === 'right') {
+        right.x = gp.axes[0] || 0;
+        right.y = gp.axes[1] || 0;
+      }
+    }
+    return { left, right };
+  }
+
+  function movePlayer(dt) {
+    // VR sticks
+    const { left, right } = getXRSticks();
+    const stickDead = (v) => Math.abs(v) < 0.12 ? 0 : v;
+    const lx = stickDead(left.x), ly = stickDead(left.y);
+    const rx = stickDead(right.x);
+
+    // Desktop fallback
+    const speed = 10; // m/s-ish (yeah we’re zoomin’, baby)
+    const turnSpeed = 1.8;
+    let movX = lx, movY = ly, turn = rx;
+    if (keys.has('KeyW')) movY = -1;
+    if (keys.has('KeyS')) movY = 1;
+    if (keys.has('KeyA')) movX = -1;
+    if (keys.has('KeyD')) movX = 1;
+    if (keys.has('KeyQ')) yaw += turnSpeed*dt;
+    if (keys.has('KeyE')) yaw -= turnSpeed*dt;
+    yaw -= turn * turnSpeed * dt; // right stick X to turn
+
+    // Move relative to camera facing
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    dir.y = 0; dir.normalize();
+    const rightVec = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0,1,0)).normalize().negate();
+
+    const forward = dir.clone().multiplyScalar(-movY * speed * dt);
+    const strafe  = rightVec.clone().multiplyScalar(movX * speed * dt);
+    dolly.position.add(forward).add(strafe);
+
+    // Apply yaw around the player
+    dolly.rotation.y = yaw;
+  }
+
+  // Start player a bit above the ground
+  dolly.position.set(0, 0, CITY_EXTENT * 0.6);
+
+  // --- animation loop -----------------------------------------------
+  renderer.setAnimationLoop(() => {
+    const dt = Math.min(0.033, clock.getDelta());
+    movePlayer(dt);
+    updateCars(dt);
+    rotateMessages(dt);
+    renderer.render(scene, camera);
+  });
+
+  // lil vibe: sun “moves” slowly (not physically accurate, we’re chill)
+  setInterval(() => {
+    sun.position.applyAxisAngle(new THREE.Vector3(0,1,0), 0.003);
+  }, 30);
+
   </script>
 </body>
 </html>
